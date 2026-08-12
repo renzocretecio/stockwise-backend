@@ -1,0 +1,48 @@
+# Core Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# Database & ORM
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9
+alembic==1.12.1
+
+# Data Validation
+pydantic==2.11.0
+pydantic-settings==2.1.0
+
+# Authentication & Security
+bcrypt==4.1.1
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+cryptography==41.0.7
+
+# Environment & Configuration
+python-dotenv==1.0.0
+python-multipart==0.0.6
+
+# Data Processing & ML (for Smart Narrator, Forecasting, Anomaly Detection)
+pandas==2.1.3
+numpy==1.26.2
+scikit-learn==1.3.2
+prophet==1.1.5
+
+# Task Queue
+redis==5.0.1
+celery==5.3.4
+
+# LLM API Integration
+anthropic==0.7.8
+
+# Development & Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+httpx==0.27.0
+
+# Logging & Monitoring (optional)
+python-json-logger==2.0.7
+
+# Code Quality (optional)
+black==23.12.0
+flake8==6.1.0
+mypy==1.7.1
