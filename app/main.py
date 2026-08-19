@@ -5,7 +5,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config.settings import settings
 from app.config.database import engine
 from app.models import Base
-from app.routes import auth, products, suppliers, purchases, sales, stock, businesses, transactions
+from app.routes import (
+    auth,
+    categories,
+    products,
+    suppliers,
+    purchases,
+    sales,
+    stock,
+    businesses,
+    product_imports,
+    inventory,
+    inventory_counts,
+    reports
+)
 
 Base.metadata.create_all(bind=engine)
 
@@ -32,7 +45,11 @@ app.include_router(purchases.router, prefix=settings.API_V1_STR, tags=["purchase
 app.include_router(sales.router, prefix=settings.API_V1_STR, tags=["sales"])
 app.include_router(stock.router, prefix=settings.API_V1_STR, tags=["stock"])
 app.include_router(businesses.router, prefix=settings.API_V1_STR, tags=["businesses"])
-app.include_router(transactions.router, prefix=settings.API_V1_STR, tags=["transactions"])
+app.include_router(product_imports.router, prefix=settings.API_V1_STR, tags=["product import"])
+app.include_router(categories.router, prefix=settings.API_V1_STR, tags=["categories"])
+app.include_router(inventory.router, prefix=settings.API_V1_STR, tags=["inventory"])
+app.include_router(inventory_counts.router, prefix=settings.API_V1_STR, tags=["inventory-counts"])
+app.include_router(reports.router, prefix=settings.API_V1_STR, tags=["reports"])
 
 @app.get("/health")
 async def health():

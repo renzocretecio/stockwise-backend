@@ -1,83 +1,86 @@
-from fastapi import APIRouter, Depends, HTTPException, Header
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, Query
+from sqlmodel import Session
+
 from app.config.database import get_db
-from app.utils.security import verify_token
-from app.models import Business
+from app.config.permissions import require_permission, RequestContext
 from app.services.sale import SaleService
-from pydantic import BaseModel
-from typing import List
+from app.schemas.sale import (
+    SaleCreate,
+    SaleVoidRequest,
+    SaleCreateResponse,
+    SaleVoidResponse,
+    SaleResponse,
+    SalesResponse,
+)
 
 router = APIRouter(prefix="/sales", tags=["sales"])
 
-def get_current_user_id(authorization: str = Header(None)) -> str:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="No token")
-    token = authorization.split(" ")[1]
-    return verify_token(token)
 
-class SaleItemRequest(BaseModel):
-    product_id: str
-    quantity: float
-    unit_price: float
-
-class CreateSaleRequest(BaseModel):
-    reference_number: str = None
-    items: List[SaleItemRequest]
-    payment_method: str = "cash"
-    tax_amount: float = 0
-    discount_amount: float = 0
-    notes: str = None
-
-@router.post("/{business_id}")
+@router.post("", response_model=SaleCreateResponse)
 async def create_sale(
-    business_id: str,
-    req: CreateSaleRequest,
+    payload: SaleCreate,
+    context: RequestContext = Depends(require_permission("sales.create")),
     db: Session = Depends(get_db),
-    user_id: str = Depends(get_current_user_id)
 ):
-    try:
-        verify_business_access(business_id, user_id, db)
+    """Create a new sale — validates and deducts stock"""
+    result = SaleService.create_sale(
+        business_id=str(context.business_id),
+        payload=payload,
+        user_id=str(context.user.id),
+        db=db,
+    )
+    return {"success": True, **result}
 
-        business = db.query(Business).filter(Business.id == business_id).first()
-        if not business:
-            raise HTTPException(status_code=404, detail="Business not found")
-        
-        sale = SaleService.create_sale(business_id, req.dict(), user_id, db)
-        return {"success": True, "sale": {"id": str(sale.id), "total_amount": float(sale.total_amount)}}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
-@router.get("/{business_id}")
+@router.get("", response_model=SalesResponse)
 async def list_sales(
-    business_id: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    status_filter: str | None = Query(default=None, alias="status"),
+    payment_method: str | None = Query(default=None),
+    context: RequestContext = Depends(require_permission("sales.read")),
     db: Session = Depends(get_db),
-    user_id: str = Depends(get_current_user_id)
 ):
-    try:
-        verify_business_access(business_id, user_id, db)
+    """List all sales for a business"""
+    result = SaleService.get_sales(
+        business_id=str(context.business_id),
+        db=db,
+        page=page,
+        page_size=page_size,
+        status_filter=status_filter,
+        payment_method=payment_method,
+    )
+    return {"success": True, **result}
 
-        business = db.query(Business).filter(Business.id == business_id).first()
-        if not business:
-            raise HTTPException(status_code=404, detail="Business not found")
-        
-        sales = SaleService.get_sales(business_id, db)
-        return {
-            "success": True,
-            "sales": [
-                {
-                    "id": str(s.id),
-                    "reference_number": s.reference_number,
-                    "status": s.status,
-                    "total_amount": float(s.total_amount),
-                    "sale_date": s.sale_date.isoformat()
-                }
-                for s in sales
-            ]
-        }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
-def verify_business_access(business_id: str, user_id: str, db: Session):
-    """Verify user has access to business"""
-    from app.services.auth import AuthService
-    return AuthService.verify_access_to_business(user_id, business_id, db)
+@router.get("/{sale_id}", response_model=SaleResponse)
+async def get_sale(
+    sale_id: str,
+    context: RequestContext = Depends(require_permission("sales.read")),
+    db: Session = Depends(get_db),
+):
+    """Get sale details"""
+    sale = SaleService.get_sale(
+        business_id=str(context.business_id),
+        sale_id=sale_id,
+        db=db,
+    )
+    return sale
+
+
+@router.post("/{sale_id}/void", response_model=SaleVoidResponse)
+async def void_sale(
+    sale_id: str,
+    payload: SaleVoidRequest,
+    context: RequestContext = Depends(require_permission("sales.void")),
+    db: Session = Depends(get_db),
+):
+    """Void a sale — restores stock"""
+    result = SaleService.void_sale(
+        business_id=str(context.business_id),
+        sale_id=sale_id,
+        reason=payload.reason,
+        user_id=str(context.user.id),
+        db=db,
+    )
+    return {"success": True, **result}

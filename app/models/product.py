@@ -30,12 +30,12 @@ class Product(Base):
     id = uuid_column(primary_key=True)
     business_id = Column(UUID_Type(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False)
     supplier_id = Column(UUID_Type(as_uuid=True), ForeignKey("suppliers.id", ondelete="SET NULL"))
+    category_id = Column(UUID_Type(as_uuid=True), ForeignKey("categories.id", ondelete="SET NULL"), nullable=True, index=True)
     sku = Column(String(100))
     barcode = Column(String(100))
     name = Column(String(200), nullable=False)
     normalized_name = Column(String(200), nullable=False)
     description = Column(Text)
-    category = Column(String(100))
     brand = Column(String(100))
     unit = Column(String(50), default='unit', nullable=False)
     cost_price = Column(Numeric(14, 2), default=0, nullable=False)
@@ -48,9 +48,16 @@ class Product(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     
-    business = relationship("Business")
+    business = relationship("Business", back_populates="products")
     supplier = relationship("Supplier", back_populates="products")
-    stock_balance = relationship("StockBalance", back_populates="product", uselist=False, cascade="all, delete-orphan")
+    category = relationship("Category", back_populates="products")  # ← This stays, it's the real FK relationship
+
+    stock_balance = relationship(
+        "StockBalance",
+        back_populates="product",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
     stock_movements = relationship("StockMovement", back_populates="product")
     purchase_items = relationship("PurchaseItem", back_populates="product")
     sale_items = relationship("SaleItem", back_populates="product")

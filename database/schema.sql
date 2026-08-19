@@ -7,6 +7,9 @@ ALTER TABLE users
     DROP CONSTRAINT IF EXISTS uq_users_business_email;
 
 ALTER TABLE users
+    DROP COLUMN IF EXISTS business_id;
+
+ALTER TABLE users
     ADD CONSTRAINT uq_users_email
     UNIQUE (email);
 
@@ -69,9 +72,6 @@ JOIN user_roles ur
     ON ur.user_id = u.id;
 
 DROP TABLE user_roles;
-
-ALTER TABLE users
-    DROP COLUMN IF EXISTS business_id;
 
 CREATE INDEX idx_users_email
     ON users(email);

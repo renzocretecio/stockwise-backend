@@ -28,23 +28,11 @@ class Business(Base):
     stock_movements = relationship("StockMovement", back_populates="business", cascade="all, delete-orphan")
     inventory_counts = relationship("InventoryCount", back_populates="business", cascade="all, delete-orphan")
     audit_logs = relationship("AuditLog", back_populates="business")
-
-class User(Base):
-    __tablename__ = "users"
-    
-    id = uuid_column(primary_key=True)
-    email = Column(String(255), unique=True, nullable=False, index=True)
-    password_hash = Column(Text, nullable=False)
-    first_name = Column(String(100), nullable=False)
-    last_name = Column(String(100))
-    is_active = Column(Boolean, default=True, nullable=False)
-    last_login_at = Column(DateTime(timezone=True))
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-    
-    # Relationships
-    memberships = relationship("BusinessMembership", back_populates="user", cascade="all, delete-orphan")
-    audit_logs = relationship("AuditLog", back_populates="user")
+    categories = relationship(
+        "Category",
+        back_populates="business",
+        cascade="all, delete-orphan",
+    )
 
 class Role(Base):
     __tablename__ = "roles"
@@ -58,21 +46,3 @@ class Role(Base):
     
     # Relationships
     memberships = relationship("BusinessMembership", back_populates="role")
-
-class BusinessMembership(Base):
-    __tablename__ = "business_memberships"
-    
-    id = uuid_column(primary_key=True)
-    business_id = Column(UUID_Type(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False, index=True)
-    user_id = Column(UUID_Type(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    role_id = Column(UUID_Type(as_uuid=True), ForeignKey("roles.id", ondelete="RESTRICT"), nullable=False)
-    status = Column(String(30), default='active', nullable=False)  # invited, active, suspended, removed
-    invited_at = Column(DateTime(timezone=True))
-    joined_at = Column(DateTime(timezone=True))
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-    
-    # Relationships
-    business = relationship("Business", back_populates="memberships")
-    user = relationship("User", back_populates="memberships")
-    role = relationship("Role", back_populates="memberships")

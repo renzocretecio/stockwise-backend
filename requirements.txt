@@ -20,6 +20,7 @@ cryptography==41.0.7
 # Environment & Configuration
 python-dotenv==1.0.0
 python-multipart==0.0.6
+openpyxl==3.1.5
 
 # Data Processing & ML (for Smart Narrator, Forecasting, Anomaly Detection)
 pandas==2.1.3
