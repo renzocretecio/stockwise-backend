@@ -74,9 +74,7 @@ async def list_categories(
 
     return {
         "success": True,
-        "categories": [
-            CategoryService._format_category_response(c) for c in categories
-        ],
+        "categories": categories,
         "pagination": {
             "page": page,
             "page_size": page_size,

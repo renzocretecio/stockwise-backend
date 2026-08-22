@@ -37,10 +37,9 @@ class ProductCreate(BaseModel):
         None,
         description="Product description"
     )
-    category: Optional[str] = Field(
+    category_id: Optional[str] = Field(
         None,
-        max_length=100,
-        description="Product category"
+        description="Product Category (must exist)"
     )
     brand: Optional[str] = Field(
         None,
@@ -122,7 +121,7 @@ class ProductCreate(BaseModel):
 class ProductUpdate(BaseModel):
     """Schema for updating a product"""
     name: Optional[str] = Field(None, min_length=1, max_length=200)
-    category: Optional[str] = Field(None, max_length=100)
+    category_id: Optional[str] = Field(None, max_length=100)
     brand: Optional[str] = Field(None, max_length=100)
     description: Optional[str] = None
     unit: Optional[str] = Field(None, max_length=50)
@@ -142,24 +141,32 @@ class ProductUpdate(BaseModel):
 # ============================================================================
 
 class ProductResponse(BaseModel):
-    """Complete product response"""
     id: str
-    name: str
+    business_id: str
+    supplier_id: Optional[str] = None
+    supplier_name: Optional[str] = None
+    category_id: Optional[str] = None
+    category_name: Optional[str] = None
     sku: Optional[str] = None
     barcode: Optional[str] = None
+    name: str
+    normalized_name: str
     description: Optional[str] = None
-    category: Optional[str] = None
     brand: Optional[str] = None
     unit: str
+    quantity: float
+    stock_status: str
     cost_price: float
     selling_price: float
     reorder_point: float
     safety_stock: float
     lead_time_days: int
     is_perishable: bool
+    is_active: bool
     margin_percent: float = Field(description="Profit margin as percentage")
     created_at: Optional[str] = None
-    
+    updated_at: Optional[str] = None
+
     class Config:
         from_attributes = True
 
@@ -183,7 +190,7 @@ class ProductListItem(BaseModel):
 class ProductsResponse(BaseModel):
     """List products response"""
     success: bool = True
-    products: list[ProductListItem]
+    products: list[ProductResponse]
     pagination: PaginationMeta
 
 
@@ -206,6 +213,12 @@ class ProductDeleteResponse(BaseModel):
     success: bool = True
     message: str
 
+
+class ProductOverallStatus(BaseModel):
+    total_products: int
+    in_stock: int
+    low_stock: int
+    out_of_stock: int
 
 # ============================================================================
 # CATEGORY SCHEMAS

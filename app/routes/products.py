@@ -7,6 +7,7 @@ from app.services.product import ProductService
 from app.schemas.product import (
     ProductCreate,
     ProductsResponse,
+    ProductOverallStatus
 )
 
 router = APIRouter(prefix="/products", tags=["products"])
@@ -61,9 +62,7 @@ async def list_products(
 
     return {
         "success": True,
-        "products": [
-            ProductService._format_product_response(p) for p in products
-        ],
+        "products": products,
         "pagination": {
             "page": page,
             "page_size": page_size,
@@ -147,3 +146,15 @@ async def delete_product(
         raise e
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/status/overview", response_model=ProductOverallStatus)
+async def get_product_overall_status(
+    context: RequestContext = Depends(require_permission("products.read")),
+    db: Session = Depends(get_db),
+):
+    """Get counts of total, in-stock, low-stock, out-of-stock products"""
+    result = ProductService.get_product_overall_status(
+        business_id=str(context.business_id),
+        db=db,
+    )
+    return result

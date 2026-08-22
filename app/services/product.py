@@ -1,7 +1,6 @@
 from sqlmodel import Session, select
 from app.models import Product, Supplier, StockBalance, Category
 from decimal import Decimal
-from app.models.product import Product, Supplier
 from fastapi import HTTPException, status
 from app.schemas.product import ProductCreate
 from sqlalchemy.exc import IntegrityError
@@ -12,11 +11,11 @@ class ProductService:
     @staticmethod
     def create_product(business_id: str, payload: ProductCreate, db: Session) -> dict:
         """
-        Create a new product with stock balance.
+        Create a new product with stock balance using strict foreign key validation.
         
         Args:
             business_id: Business ID
-            payload: ProductCreate schema
+            payload: ProductCreate schema (expects payload.category_id)
             db: Database session
             
         Returns:
@@ -26,7 +25,7 @@ class ProductService:
             HTTPException: If validation fails
         """
         try:
-            # Validate SKU uniqueness
+            # 1. Validate SKU uniqueness within the business scope
             if payload.sku:
                 existing_sku = db.execute(
                     select(Product).where(
@@ -41,7 +40,7 @@ class ProductService:
                         detail=f"SKU '{payload.sku}' already exists in this business"
                     )
             
-            # Validate barcode uniqueness
+            # 2. Validate barcode uniqueness within the business scope
             if payload.barcode:
                 existing_barcode = db.execute(
                     select(Product).where(
@@ -56,7 +55,7 @@ class ProductService:
                         detail=f"Barcode '{payload.barcode}' already exists in this business"
                     )
             
-            # Validate supplier exists
+            # 3. Validate supplier exists and belongs to this business
             if payload.supplier_id:
                 supplier = db.execute(
                     select(Supplier).where(
@@ -71,43 +70,39 @@ class ProductService:
                         detail="Supplier not found"
                     )
 
-            category_id = None
-            if payload.category:
+            # 4. Explicit Category ID Validation (Industry Standard Refactor)
+            if payload.category_id:
                 category = db.execute(
                     select(Category).where(
+                        Category.id == payload.category_id,
                         Category.business_id == business_id,
-                        Category.name == payload.category,
                         Category.is_active == True,
                     )
                 ).scalar_one_or_none()
 
                 if not category:
-                    category = Category(
-                        business_id=business_id,
-                        name=payload.category,
-                        is_active=True,
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Category not found or is inactive"
                     )
-                    db.add(category)
-                    db.flush()
-
-                category_id = category.id
             
-            # Validate prices
+            # 5. Validate business pricing integrity rules
             if payload.selling_price < payload.cost_price:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Selling price must be greater than or equal to cost price"
                 )
             
-            # Create product
+            # 6. Create product entity
             product = Product(
                 business_id=business_id,
                 supplier_id=payload.supplier_id,
+                category_id=payload.category_id,
                 sku=payload.sku,
                 barcode=payload.barcode,
                 name=payload.name,
+                description=payload.description,
                 normalized_name=payload.name.lower().strip(),
-                category_id=category_id,
                 brand=payload.brand,
                 unit=payload.unit,
                 cost_price=payload.cost_price,
@@ -120,9 +115,9 @@ class ProductService:
             )
             
             db.add(product)
-            db.flush()  # Get the product ID
+            db.flush()
             
-            # Create stock balance
+            # 7. Create companion stock balance entity tracking
             stock_balance = StockBalance(
                 business_id=business_id,
                 product_id=product.id,
@@ -133,9 +128,15 @@ class ProductService:
             
             db.add(stock_balance)
             db.commit()
-            db.refresh(product)
             
-            return ProductService._format_product_response(product)
+            # Eager load relationships explicitly for the final response serializer
+            from sqlalchemy.orm import joinedload
+            db.refresh(
+                product, 
+                attribute_names=["supplier", "category", "stock_balance"]
+            )
+            
+            return ProductService._format_product_response(product, product.stock_balance)
         
         except HTTPException:
             db.rollback()
@@ -189,7 +190,16 @@ class ProductService:
 
         products = db.execute(query).scalars().all()
 
-        return products, total
+        product_ids = [p.id for p in products]
+        stock_balances = db.execute(
+            select(StockBalance).where(StockBalance.product_id.in_(product_ids))
+        ).scalars().all()
+        stock_by_product = {sb.product_id: sb for sb in stock_balances}
+
+        return [
+            ProductService._format_product_response(p, stock_by_product.get(p.id))
+            for p in products
+        ], total
     
     @staticmethod
     def get_product(business_id: str, product_id: str, db: Session) -> dict:
@@ -213,8 +223,17 @@ class ProductService:
     @staticmethod
     def update_product(business_id: str, product_id: str, payload: dict, db: Session) -> dict:
         """Update a product"""
+        # Use joinedload to fetch relationships and stock_balance upfront safely
+        from sqlalchemy.orm import joinedload
+        
         product = db.execute(
-            select(Product).where(
+            select(Product)
+            .options(
+                joinedload(Product.stock_balance),
+                joinedload(Product.supplier),
+                joinedload(Product.category)
+            )
+            .where(
                 Product.business_id == business_id,
                 Product.id == product_id
             )
@@ -225,10 +244,9 @@ class ProductService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Product not found"
             )
-        
-        # Update allowed fields
+
         allowed_fields = {
-            "name", "sku", "barcode", "category", "brand",
+            "name", "sku", "barcode", "category_id", "brand", "description",
             "unit", "cost_price", "selling_price",
             "reorder_point", "safety_stock", "lead_time_days", "is_perishable"
         }
@@ -242,8 +260,8 @@ class ProductService:
         db.add(product)
         db.commit()
         db.refresh(product)
-        
-        return ProductService._format_product_response(product)
+
+        return ProductService._format_product_response(product, product.stock_balance)
 
     @staticmethod
     def soft_delete_product(business_id: str, product_id: str, db: Session) -> dict:
@@ -268,14 +286,61 @@ class ProductService:
         return {"success": True, "message": "Product deleted"}
 
     @staticmethod
-    def _format_product_response(product: Product) -> dict:
-        """Format product response"""
+    def get_product_overall_status(business_id: str, db:Session) -> list:
+        """Get counts of total, in-stock, low-stock, and out-of-stock products"""
+        rows = db.execute(
+            select(StockBalance, Product)
+            .join(Product, Product.id == StockBalance.product_id)
+            .where(
+                Product.business_id == business_id,
+                Product.is_active == True,
+            )
+        ).all()
+
+        total_products = len(rows)
+        in_stock_count = 0
+        low_stock_count = 0
+        out_of_stock_count = 0
+
+        for stock_balance, product in rows:
+            if stock_balance.quantity <= 0:
+                out_of_stock_count += 1
+            elif stock_balance.quantity <= product.reorder_point:
+                low_stock_count += 1
+            else:
+                in_stock_count += 1
+
+        return {
+            "total_products": total_products,
+            "in_stock": in_stock_count,
+            "low_stock": low_stock_count,
+            "out_of_stock": out_of_stock_count,
+        }
+
+    @staticmethod
+    def _format_product_response(product: Product, stock_balance: StockBalance | None = None) -> dict:
+        """Format product response with all columns"""
+        quantity = float(stock_balance.quantity) if stock_balance else 0.0
+
+        if quantity <= 0:
+            stock_status = "out_of_stock"
+        elif quantity <= float(product.reorder_point):
+            stock_status = "low_stock"
+        else:
+            stock_status = "in_stock"
+
         return {
             "id": str(product.id),
-            "name": product.name,
+            "business_id": str(product.business_id),
+            "supplier_id": str(product.supplier_id) if product.supplier_id else None,
+            "supplier_name": product.supplier.name if product.supplier else None,
+            "category_id": str(product.category_id) if product.category_id else None,
+            "category_name": product.category.name if product.category else None,
             "sku": product.sku,
             "barcode": product.barcode,
-            "category": product.category.name if product.category else None,
+            "name": product.name,
+            "normalized_name": product.normalized_name,
+            "description": product.description,
             "brand": product.brand,
             "unit": product.unit,
             "cost_price": float(product.cost_price),
@@ -284,9 +349,14 @@ class ProductService:
             "safety_stock": float(product.safety_stock),
             "lead_time_days": product.lead_time_days,
             "is_perishable": product.is_perishable,
+            "is_active": product.is_active,
             "margin_percent": round(
                 ((product.selling_price - product.cost_price) / product.cost_price * 100)
                 if product.cost_price > 0 else 0,
                 2
             ),
+            "quantity": quantity,                # ← NEW
+            "stock_status": stock_status,        # ← NEW
+            "created_at": product.created_at.isoformat() if product.created_at else None,
+            "updated_at": product.updated_at.isoformat() if product.updated_at else None,
         }

@@ -4,6 +4,7 @@ from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException, status
 
 from app.models.category import Category
+from app.models.product import Product
 from app.schemas.category import CategoryCreate, CategoryUpdate
 
 
@@ -57,13 +58,13 @@ class CategoryService:
 
     @staticmethod
     def get_categories(
-            business_id: str,
-            db: Session,
-            page: int = 1,
-            page_size: int = 10,
-            search: str | None = None,
-            paginate: bool = True,
-        ) -> tuple[list, int]:
+        business_id: str,
+        db: Session,
+        page: int = 1,
+        page_size: int = 10,
+        search: str | None = None,
+        paginate: bool = True,
+    ) -> tuple[list, int]:
         """
         Get categories for a business.
         
@@ -86,16 +87,38 @@ class CategoryService:
         if not paginate:
             categories = db.execute(query).scalars().all()
             return categories, len(categories)
+        else:
+            count_query = select(func.count()).select_from(query.subquery())
+            total = db.execute(count_query).scalar_one()
 
-        count_query = select(func.count()).select_from(query.subquery())
-        total = db.execute(count_query).scalar_one()
+            offset = (page - 1) * page_size
+            query = query.offset(offset).limit(page_size)
+            categories = db.execute(query).scalars().all()
 
-        offset = (page - 1) * page_size
-        query = query.offset(offset).limit(page_size)
+        category_ids = [c.id for c in categories]
+        product_counts: dict = {}
 
-        categories = db.execute(query).scalars().all()
+        if category_ids:
+            count_rows = db.execute(
+                select(Product.category_id, func.count(Product.id))
+                .where(
+                    Product.business_id == business_id,
+                    Product.category_id.in_(category_ids),
+                    Product.is_active == True,
+                )
+                .group_by(Product.category_id)
+            ).all()
+            product_counts = {category_id: count for category_id, count in count_rows}
 
-        return categories, total
+        results = [
+            {
+                **CategoryService._format_category_response(c),
+                "product_count": product_counts.get(c.id, 0),
+            }
+            for c in categories
+        ]
+
+        return results, total
 
     @staticmethod
     def get_category(business_id: str, category_id: str, db: Session) -> dict:
