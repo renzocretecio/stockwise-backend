@@ -7,6 +7,7 @@ from datetime import datetime
 
 class PurchaseStatus(str, Enum):
     DRAFT = "draft"
+    ORDERED = "ordered"
     RECEIVED = "received"
     CANCELLED = "cancelled"
 
@@ -107,14 +108,27 @@ class PurchaseResponse(BaseModel):
     notes: Optional[str] = None
     created_by: Optional[str] = None
     created_at: datetime
+    ordered_at: Optional[datetime] = None
     received_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
 
+class PurchaseListItemProduct(BaseModel):
+    id: str
+    product_id: str
+    product_name: str
+    sku: Optional[str] = None
+    quantity: float
+    unit_cost: float
+    line_total: float
+
+    class Config:
+        from_attributes = True
 
 class PurchaseListItem(BaseModel):
-    """Lightweight purchase for list views"""
+    """Lightweight purchase for list views."""
+
     id: str
     supplier_id: str
     supplier_name: str
@@ -122,7 +136,9 @@ class PurchaseListItem(BaseModel):
     status: str
     total_amount: float
     item_count: int
+    items: list[PurchaseListItemProduct]
     created_at: datetime
+    ordered_at: Optional[datetime] = None
     received_at: Optional[datetime] = None
 
     class Config:
@@ -151,6 +167,13 @@ class PurchaseCreateResponse(BaseModel):
     purchase_id: str
     status: str
     total_amount: float
+    message: str
+
+
+class PurchaseOrderResponse(BaseModel):
+    success: bool = True
+    purchase_id: str
+    status: str
     message: str
 
 

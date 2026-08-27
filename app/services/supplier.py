@@ -1,6 +1,7 @@
-from sqlmodel import Session, select
+from sqlmodel import Session
 from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException, status
+from sqlalchemy import func, or_, select
 
 from app.models.product import Supplier
 from app.schemas.supplier import SupplierCreate, SupplierUpdate
@@ -87,22 +88,48 @@ class SupplierService:
         return suppliers
 
     @staticmethod
-    def get_supplier(business_id: str, supplier_id: str, db: Session) -> dict:
-        """Get a single supplier by ID"""
-        supplier = db.execute(
-            select(Supplier).where(
-                Supplier.business_id == business_id,
-                Supplier.id == supplier_id,
-            )
-        ).scalar_one_or_none()
+    def get_suppliers(
+        business_id: str,
+        db: Session,
+        page: int = 1,
+        page_size: int = 10,
+        search: str | None = None,
+    ):
+        query = select(Supplier).where(
+            Supplier.business_id == business_id,
+            Supplier.is_active == True,
+        )
 
-        if not supplier:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Supplier not found",
+        if search:
+            search_term = f"%{search.strip()}%"
+
+            query = query.where(
+                or_(
+                    Supplier.name.ilike(search_term),
+                    Supplier.contact_person.ilike(search_term),
+                    Supplier.email.ilike(search_term),
+                    Supplier.phone.ilike(search_term),
+                )
             )
 
-        return SupplierService._format_supplier_response(supplier)
+        count_query = select(
+            func.count()
+        ).select_from(
+            query.subquery()
+        )
+
+        total = db.execute(
+            count_query
+        ).scalar_one()
+
+        suppliers = db.execute(
+            query
+            .order_by(Supplier.name.asc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        ).scalars().all()
+
+        return suppliers, total
 
     @staticmethod
     def update_supplier(

@@ -15,11 +15,14 @@ class AdjustmentReason(str, Enum):
 
 
 class MovementType(str, Enum):
-    PURCHASE_RECEIVE = "purchase_receive"
+    PURCHASE = "purchase"
     SALE = "sale"
-    ADJUSTMENT = "adjustment"
-    COUNT_ADJUSTMENT = "count_adjustment"
     RETURN = "return"
+    ADJUSTMENT = "adjustment"
+    DAMAGE = "damage"
+    EXPIRED = "expired"
+    TRANSFER_IN = "transfer_in"
+    TRANSFER_OUT = "transfer_out"
 
 
 # ---- Stock Overview ----
@@ -101,7 +104,8 @@ class StockMovementItem(BaseModel):
     product_name: str
     movement_type: str
     quantity_change: float
-    balance_after: float
+    unit_cost: Optional[float] = None
+    reason: Optional[str] = None
     reference_type: Optional[str] = None
     reference_id: Optional[str] = None
     notes: Optional[str] = None

@@ -7,6 +7,8 @@ from datetime import datetime
 
 class SaleStatus(str, Enum):
     COMPLETED = "completed"
+    PARTIALLY_RETURNED = "partially_returned"
+    RETURNED = "returned"
     VOIDED = "voided"
 
 
@@ -76,6 +78,25 @@ class SaleVoidRequest(BaseModel):
     reason: str = Field(..., min_length=1, max_length=500)
 
 
+class SaleReturnItemCreate(BaseModel):
+    sale_item_id: str
+    quantity: Decimal = Field(..., gt=0, description="Quantity being returned")
+
+
+class SaleReturnCreate(BaseModel):
+    items: list[SaleReturnItemCreate] = Field(..., min_length=1)
+    reason: str = Field(..., min_length=1, max_length=500)
+    notes: Optional[str] = None
+
+    @field_validator("items")
+    @classmethod
+    def validate_unique_sale_items(cls, v: list[SaleReturnItemCreate]) -> list[SaleReturnItemCreate]:
+        ids = [item.sale_item_id for item in v]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Duplicate sale_item_id in return items")
+        return v
+
+
 # ============================================================================
 # RESPONSE SCHEMAS
 # ============================================================================
@@ -91,6 +112,8 @@ class SaleItemResponse(BaseModel):
     unit_cost: float
     line_total: float
     line_profit: float
+    returned_quantity: float = 0
+    returnable_quantity: float
 
     class Config:
         from_attributes = True
@@ -163,3 +186,32 @@ class SaleVoidResponse(BaseModel):
     sale_id: str
     status: str
     message: str
+
+
+class SaleReturnResponse(BaseModel):
+    success: bool = True
+    return_id: str
+    sale_id: str
+    sale_status: str
+    refund_amount: float
+    message: str
+
+
+class SaleReturnListItem(BaseModel):
+    id: str
+    sale_id: str
+    sale_reference_number: Optional[str] = None
+    status: str
+    reason: str
+    notes: Optional[str] = None
+    refund_amount: float
+    item_count: int
+    total_quantity: float
+    created_by: Optional[str] = None
+    created_at: datetime
+
+
+class SaleReturnsResponse(BaseModel):
+    success: bool = True
+    returns: list[SaleReturnListItem]
+    pagination: PaginationMeta

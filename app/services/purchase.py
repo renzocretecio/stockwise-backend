@@ -14,6 +14,67 @@ from app.schemas.stock import MovementType
 
 class PurchaseService:
     @staticmethod
+    def order_purchase(
+        business_id: str,
+        purchase_id: str,
+        user_id: str,
+        db: Session,
+    ) -> dict:
+        """Confirm a draft purchase without changing inventory."""
+        try:
+            purchase = db.execute(
+                select(Purchase)
+                .where(
+                    Purchase.business_id == business_id,
+                    Purchase.id == purchase_id,
+                )
+                .with_for_update()
+            ).scalar_one_or_none()
+
+            if not purchase:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Purchase not found",
+                )
+            if purchase.status != PurchaseStatus.DRAFT.value:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Cannot order a purchase with status '{purchase.status}'",
+                )
+
+            item_count = db.execute(
+                select(func.count(PurchaseItem.id)).where(
+                    PurchaseItem.purchase_id == purchase.id
+                )
+            ).scalar_one()
+            if not item_count:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Purchase has no items to order",
+                )
+
+            purchase.status = PurchaseStatus.ORDERED.value
+            purchase.ordered_at = datetime.now(timezone.utc)
+            purchase.ordered_by = user_id
+            db.add(purchase)
+            db.commit()
+
+            return {
+                "purchase_id": str(purchase.id),
+                "status": purchase.status,
+                "message": "Purchase ordered and awaiting receipt",
+            }
+        except HTTPException:
+            db.rollback()
+            raise
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to order purchase: {str(e)}",
+            )
+
+    @staticmethod
     def create_purchase(
         business_id: str,
         payload: PurchaseCreate,
@@ -121,10 +182,16 @@ class PurchaseService:
             )
 
     @staticmethod
-    def get_purchase(business_id: str, purchase_id: str, db: Session) -> dict:
-        """Get a single purchase with items"""
+    def get_purchase(
+        business_id: str,
+        purchase_id: str,
+        db: Session,
+    ) -> dict:
+        """Get a single purchase with items."""
+
         purchase = db.execute(
-            select(Purchase).where(
+            select(Purchase)
+            .where(
                 Purchase.business_id == business_id,
                 Purchase.id == purchase_id,
             )
@@ -136,7 +203,10 @@ class PurchaseService:
                 detail="Purchase not found",
             )
 
-        return PurchaseService._format_purchase_response(purchase, db)
+        return PurchaseService._format_purchase_response(
+            purchase,
+            db,
+        )
 
     @staticmethod
     def get_purchases(
@@ -147,34 +217,81 @@ class PurchaseService:
         status_filter: str | None = None,
         supplier_id: str | None = None,
     ) -> dict:
-        """Get paginated purchases for a business"""
-        query = select(Purchase).where(Purchase.business_id == business_id)
+        """Get paginated purchases for a business."""
+
+        query = select(Purchase).where(
+            Purchase.business_id == business_id
+        )
 
         if status_filter:
-            query = query.where(Purchase.status == status_filter)
+            query = query.where(
+                Purchase.status == status_filter
+            )
 
         if supplier_id:
-            query = query.where(Purchase.supplier_id == supplier_id)
+            query = query.where(
+                Purchase.supplier_id == supplier_id
+            )
 
-        count_query = select(func.count()).select_from(query.subquery())
-        total = db.execute(count_query).scalar_one()
+        count_query = select(
+            func.count()
+        ).select_from(
+            query.subquery()
+        )
+
+        total = db.execute(
+            count_query
+        ).scalar_one()
 
         offset = (page - 1) * page_size
-        query = query.order_by(Purchase.created_at.desc()).offset(offset).limit(page_size)
 
-        purchases = db.execute(query).scalars().all()
+        query = (
+            query
+            .order_by(Purchase.created_at.desc())
+            .offset(offset)
+            .limit(page_size)
+        )
+
+        purchases = db.execute(
+            query
+        ).scalars().all()
 
         items = []
+
         for purchase in purchases:
             supplier = db.execute(
-                select(Supplier).where(Supplier.id == purchase.supplier_id)
+                select(Supplier).where(
+                    Supplier.id == purchase.supplier_id
+                )
             ).scalar_one_or_none()
 
-            item_count = db.execute(
-                select(func.count()).select_from(PurchaseItem).where(
+            purchase_items = db.execute(
+                select(PurchaseItem).where(
                     PurchaseItem.purchase_id == purchase.id
                 )
-            ).scalar_one()
+            ).scalars().all()
+
+            formatted_items = []
+
+            for purchase_item in purchase_items:
+                product = db.execute(
+                    select(Product).where(
+                        Product.id == purchase_item.product_id
+                    )
+                ).scalar_one_or_none()
+
+                formatted_items.append({
+                    "id": str(purchase_item.id),
+                    "product_id": str(purchase_item.product_id),
+                    "product_name": product.name if product else "Unknown",
+                    "sku": product.sku if product else None,
+                    "quantity": float(purchase_item.quantity),
+                    "unit_cost": float(purchase_item.unit_cost),
+                    "line_total": float(
+                        purchase_item.quantity *
+                        purchase_item.unit_cost
+                    ),
+                })
 
             items.append({
                 "id": str(purchase.id),
@@ -183,12 +300,18 @@ class PurchaseService:
                 "reference_number": purchase.reference_number,
                 "status": purchase.status,
                 "total_amount": float(purchase.total_amount),
-                "item_count": item_count,
+                "item_count": len(formatted_items),
+                "items": formatted_items,
                 "created_at": purchase.created_at,
+                "ordered_at": purchase.ordered_at,
                 "received_at": purchase.received_at,
             })
 
-        total_pages = (total + page_size - 1) // page_size if total > 0 else 0
+        total_pages = (
+            (total + page_size - 1) // page_size
+            if total > 0
+            else 0
+        )
 
         return {
             "purchases": items,
@@ -313,10 +436,12 @@ class PurchaseService:
         """Receive a purchase — updates stock balances and creates movements"""
         try:
             purchase = db.execute(
-                select(Purchase).where(
+                select(Purchase)
+                .where(
                     Purchase.business_id == business_id,
                     Purchase.id == purchase_id,
                 )
+                .with_for_update()
             ).scalar_one_or_none()
 
             if not purchase:
@@ -325,10 +450,10 @@ class PurchaseService:
                     detail="Purchase not found",
                 )
 
-            if purchase.status != PurchaseStatus.DRAFT.value:
+            if purchase.status != PurchaseStatus.ORDERED.value:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Purchase already '{purchase.status}'",
+                    detail=f"Cannot receive a purchase with status '{purchase.status}'",
                 )
 
             items = db.execute(
@@ -382,9 +507,9 @@ class PurchaseService:
                 movement = StockMovement(
                     business_id=business_id,
                     product_id=item.product_id,
-                    movement_type=MovementType.PURCHASE_RECEIVE.value,
-                    quantity_change=item.quantity,
-                    balance_after=new_quantity,
+                    movement_type=MovementType.PURCHASE.value,
+                    quantity=item.quantity,
+                    unit_cost=item.unit_cost,
                     reference_type="purchase",
                     reference_id=purchase.id,
                     notes=f"Received from purchase {purchase.reference_number or purchase.id}",
@@ -404,6 +529,7 @@ class PurchaseService:
 
             purchase.status = PurchaseStatus.RECEIVED.value
             purchase.received_at = datetime.now(timezone.utc)
+            purchase.received_by = user_id
             db.add(purchase)
 
             db.commit()
@@ -429,10 +555,12 @@ class PurchaseService:
     def cancel_purchase(business_id: str, purchase_id: str, db: Session) -> dict:
         """Cancel a draft purchase"""
         purchase = db.execute(
-            select(Purchase).where(
+            select(Purchase)
+            .where(
                 Purchase.business_id == business_id,
                 Purchase.id == purchase_id,
             )
+            .with_for_update()
         ).scalar_one_or_none()
 
         if not purchase:
@@ -497,5 +625,6 @@ class PurchaseService:
             "notes": purchase.notes,
             "created_by": str(purchase.created_by) if purchase.created_by else None,
             "created_at": purchase.created_at,
+            "ordered_at": purchase.ordered_at,
             "received_at": purchase.received_at,
         }

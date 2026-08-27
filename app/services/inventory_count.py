@@ -1,10 +1,12 @@
 from decimal import Decimal
+from datetime import datetime, timezone
 from sqlmodel import Session, select
 from fastapi import HTTPException, status
+from sqlalchemy import func
 
 from app.models.product import Product
 from app.models.inventory import StockBalance, StockMovement, InventoryCount, InventoryCountItem
-from app.schemas.inventory_count import InventoryCountCreate, CountScope, CountStatus
+from app.schemas.inventory_count import InventoryCountCreate, CountScope, RecordCountItem
 from app.schemas.stock import MovementType
 
 
@@ -40,8 +42,8 @@ class InventoryCountService:
 
             count = InventoryCount(
                 business_id=business_id,
-                name=payload.name,
-                status=CountStatus.IN_PROGRESS.value,
+                status="in_progress",
+                notes=payload.name,   # ← using notes as the session label, since there's no `name` column
                 created_by=user_id,
             )
             db.add(count)
@@ -49,7 +51,7 @@ class InventoryCountService:
 
             for product, stock_balance in rows:
                 item = InventoryCountItem(
-                    count_id=count.id,
+                    inventory_count=count,
                     product_id=product.id,
                     expected_quantity=stock_balance.quantity,
                     counted_quantity=None,
@@ -60,11 +62,11 @@ class InventoryCountService:
             db.refresh(count)
 
             return {
-                "count_id": str(count.id),
-                "name": count.name,
+                "inventory_count_id": str(count.id),
+                "name": payload.name,
                 "status": count.status,
                 "total_items": len(rows),
-                "message": f"Count session '{count.name}' started with {len(rows)} products",
+                "message": f"Count session '{payload.name}' started with {len(rows)} products",
             }
 
         except HTTPException:
@@ -78,16 +80,15 @@ class InventoryCountService:
             )
 
     @staticmethod
-    def record_count_item(
+    def record_count_items(
         business_id: str,
         count_id: str,
-        product_id: str,
-        counted_quantity: Decimal,
-        notes: str | None,
+        items: list[RecordCountItem],
         user_id: str,
         db: Session,
     ) -> dict:
-        """Record a counted quantity for a product in the session"""
+        """Record counted quantities for multiple products in a count session."""
+
         count = db.execute(
             select(InventoryCount).where(
                 InventoryCount.business_id == business_id,
@@ -96,41 +97,82 @@ class InventoryCountService:
         ).scalar_one_or_none()
 
         if not count:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Count not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Count not found",
+            )
 
-        if count.status != CountStatus.IN_PROGRESS.value:
+        if count.status != "in_progress":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Cannot record items on a count with status '{count.status}'",
             )
 
-        item = db.execute(
-            select(InventoryCountItem).where(
-                InventoryCountItem.count_id == count_id,
-                InventoryCountItem.product_id == product_id,
+        if not items:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No count items provided",
             )
-        ).scalar_one_or_none()
 
-        if not item:
+        product_ids = [
+            item.product_id
+            for item in items
+        ]
+
+        count_items = db.execute(
+            select(InventoryCountItem).where(
+                InventoryCountItem.inventory_count_id == count_id,
+                InventoryCountItem.product_id.in_(product_ids),
+            )
+        ).scalars().all()
+
+        count_item_map = {
+            str(item.product_id): item
+            for item in count_items
+        }
+
+        missing_product_ids = [
+            product_id
+            for product_id in product_ids
+            if product_id not in count_item_map
+        ]
+
+        if missing_product_ids:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Product not part of this count session",
+                detail={
+                    "message": "Some products are not part of this count session",
+                    "product_ids": missing_product_ids,
+                },
             )
 
-        item.counted_quantity = counted_quantity
-        item.notes = notes
-        item.counted_by = user_id
-        db.add(item)
-        db.commit()
-        db.refresh(item)
+        results = []
 
-        variance = item.counted_quantity - item.expected_quantity
+        for payload in items:
+            item = count_item_map[payload.product_id]
+
+            item.counted_quantity = payload.counted_quantity
+            item.notes = payload.notes
+            item.counted_at = func.now()
+
+            variance = (
+                item.counted_quantity -
+                item.expected_quantity
+            )
+
+            results.append({
+                "product_id": str(item.product_id),
+                "expected_quantity": float(item.expected_quantity),
+                "counted_quantity": float(item.counted_quantity),
+                "variance": float(variance),
+            })
+
+        db.commit()
 
         return {
-            "product_id": str(product_id),
-            "expected_quantity": float(item.expected_quantity),
-            "counted_quantity": float(item.counted_quantity),
-            "variance": float(variance),
+            "count_id": str(count.id),
+            "updated_items": len(results),
+            "items": results,
         }
 
     @staticmethod
@@ -149,7 +191,7 @@ class InventoryCountService:
         rows = db.execute(
             select(InventoryCountItem, Product)
             .join(Product, Product.id == InventoryCountItem.product_id)
-            .where(InventoryCountItem.count_id == count_id)
+            .where(InventoryCountItem.inventory_count_id == count_id)
         ).all()
 
         items = []
@@ -175,7 +217,7 @@ class InventoryCountService:
 
         return {
             "id": str(count.id),
-            "name": count.name,
+            "name": count.notes or f"Count — {count.count_date}",
             "status": count.status,
             "scope": "custom",
             "total_items": len(rows),
@@ -198,14 +240,14 @@ class InventoryCountService:
         result = []
         for count in counts:
             items = db.execute(
-                select(InventoryCountItem).where(InventoryCountItem.count_id == count.id)
+                select(InventoryCountItem).where(InventoryCountItem.inventory_count_id == count.id)
             ).scalars().all()
 
             counted = sum(1 for i in items if i.counted_quantity is not None)
 
             result.append({
                 "id": str(count.id),
-                "name": count.name,
+                "name": count.notes or f"Count — {count.count_date}",
                 "status": count.status,
                 "total_items": len(items),
                 "counted_items": counted,
@@ -229,21 +271,21 @@ class InventoryCountService:
             if not count:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Count not found")
 
-            if count.status != CountStatus.IN_PROGRESS.value:
+            if count.status != "in_progress":
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Count already '{count.status}'",
                 )
 
             items = db.execute(
-                select(InventoryCountItem).where(InventoryCountItem.count_id == count_id)
+                select(InventoryCountItem).where(InventoryCountItem.inventory_count_id == count_id)
             ).scalars().all()
 
             adjustments_made = 0
 
             for item in items:
                 if item.counted_quantity is None:
-                    continue  # skip uncounted items
+                    continue
 
                 variance = item.counted_quantity - item.expected_quantity
                 if variance == 0:
@@ -265,20 +307,19 @@ class InventoryCountService:
                 movement = StockMovement(
                     business_id=business_id,
                     product_id=item.product_id,
-                    movement_type=MovementType.COUNT_ADJUSTMENT.value,
-                    quantity_change=variance,
-                    balance_after=item.counted_quantity,
+                    movement_type=MovementType.ADJUSTMENT.value,
+                    quantity=variance,
                     reference_type="inventory_count",
                     reference_id=count.id,
-                    notes=f"Physical count variance: {item.notes or ''}".strip(),
+                    reason="physical_count",
+                    notes="Physical count variance",
                     created_by=user_id,
                 )
                 db.add(movement)
                 adjustments_made += 1
 
-            count.status = CountStatus.COMPLETED.value
+            count.status = "finalized"
             count.finalized_by = user_id
-            from datetime import datetime, timezone
             count.finalized_at = datetime.now(timezone.utc)
             db.add(count)
 
@@ -314,13 +355,13 @@ class InventoryCountService:
         if not count:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Count not found")
 
-        if count.status != CountStatus.IN_PROGRESS.value:
+        if count.status != "in_progress":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Cannot cancel a count with status '{count.status}'",
             )
 
-        count.status = CountStatus.CANCELLED.value
+        count.status = "cancelled"
         db.add(count)
         db.commit()
 

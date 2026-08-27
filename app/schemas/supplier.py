@@ -1,6 +1,14 @@
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional
 
+class PaginationMeta(BaseModel):
+    """Pagination metadata"""
+    page: int
+    page_size: int
+    total: int
+    total_pages: int
+    has_next: bool
+    has_previous: bool
 
 class SupplierCreate(BaseModel):
     """Schema for creating a new supplier"""
@@ -71,10 +79,9 @@ class SupplierListItem(BaseModel):
 
 
 class SuppliersResponse(BaseModel):
-    """List suppliers response"""
     success: bool = True
-    suppliers: list[SupplierListItem]
-    total: int = 0
+    suppliers: list[SupplierResponse]
+    pagination: PaginationMeta
 
 
 class SupplierCreateResponse(BaseModel):

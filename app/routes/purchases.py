@@ -8,6 +8,7 @@ from app.schemas.purchase import (
     PurchaseCreate,
     PurchaseUpdate,
     PurchaseCreateResponse,
+    PurchaseOrderResponse,
     PurchaseReceiveResponse,
     PurchaseCancelResponse,
     PurchaseResponse,
@@ -54,19 +55,22 @@ async def list_purchases(
     return {"success": True, **result}
 
 
-@router.get("/{purchase_id}", response_model=PurchaseResponse)
+@router.get(
+    "/{purchase_id}",
+    response_model=PurchaseResponse,
+)
 async def get_purchase(
     purchase_id: str,
-    context: RequestContext = Depends(require_permission("purchases.read")),
+    context: RequestContext = Depends(
+        require_permission("purchases.read")
+    ),
     db: Session = Depends(get_db),
 ):
-    """Get purchase details"""
-    purchase = PurchaseService.get_purchase(
+    return PurchaseService.get_purchase(
         business_id=str(context.business_id),
         purchase_id=purchase_id,
         db=db,
     )
-    return purchase
 
 
 @router.put("/{purchase_id}")
@@ -94,6 +98,22 @@ async def receive_purchase(
 ):
     """Receive a purchase and update stock"""
     result = PurchaseService.receive_purchase(
+        business_id=str(context.business_id),
+        purchase_id=purchase_id,
+        user_id=str(context.user.id),
+        db=db,
+    )
+    return {"success": True, **result}
+
+
+@router.post("/{purchase_id}/order", response_model=PurchaseOrderResponse)
+async def order_purchase(
+    purchase_id: str,
+    context: RequestContext = Depends(require_permission("purchases.create")),
+    db: Session = Depends(get_db),
+):
+    """Confirm a draft purchase order and mark it as awaiting receipt."""
+    result = PurchaseService.order_purchase(
         business_id=str(context.business_id),
         purchase_id=purchase_id,
         user_id=str(context.user.id),

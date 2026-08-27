@@ -48,7 +48,7 @@ class InventoryCountItemPreview(BaseModel):
 
 class InventoryCountCreateResponse(BaseModel):
     success: bool = True
-    count_id: str
+    inventory_count_id: str
     name: str
     status: str
     total_items: int
@@ -58,16 +58,27 @@ class InventoryCountCreateResponse(BaseModel):
 # ---- Record Count Item ----
 
 class RecordCountItem(BaseModel):
+    product_id: str
     counted_quantity: Decimal = Field(..., ge=0)
     notes: Optional[str] = None
 
 
-class RecordCountItemResponse(BaseModel):
-    success: bool = True
+class RecordCountItems(BaseModel):
+    items: list[RecordCountItem]
+
+
+class RecordCountItemResult(BaseModel):
     product_id: str
     expected_quantity: float
     counted_quantity: float
     variance: float
+
+
+class RecordCountItemsResponse(BaseModel):
+    success: bool = True
+    count_id: str
+    updated_items: int
+    items: list[RecordCountItemResult]
 
 
 # ---- Get Count Detail ----

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlmodel import Session
 
 from app.config.database import get_db
@@ -36,21 +36,58 @@ async def create_supplier(
 
 @router.get("", response_model=SuppliersResponse)
 async def list_suppliers(
-    context: RequestContext = Depends(require_permission("suppliers.read")),
+    page: int = Query(
+        default=1,
+        ge=1,
+        description="Page number",
+    ),
+    page_size: int = Query(
+        default=10,
+        ge=1,
+        le=100,
+        description="Items per page",
+    ),
+    search: str | None = Query(
+        default=None,
+        description="Search by name, contact, email, or phone",
+    ),
+    context: RequestContext = Depends(
+        require_permission("suppliers.read")
+    ),
     db: Session = Depends(get_db),
 ):
-    """Get all suppliers for a business"""
-    suppliers = SupplierService.get_suppliers(
+    """Get paginated suppliers for a business."""
+
+    suppliers, total = SupplierService.get_suppliers(
         business_id=str(context.business_id),
         db=db,
+        page=page,
+        page_size=page_size,
+        search=search,
+    )
+
+    total_pages = (
+        (total + page_size - 1) // page_size
+        if total > 0
+        else 0
     )
 
     return {
         "success": True,
         "suppliers": [
-            SupplierService._format_supplier_response(s) for s in suppliers
+            SupplierService._format_supplier_response(
+                supplier
+            )
+            for supplier in suppliers
         ],
-        "total": len(suppliers),
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+            "has_next": page < total_pages,
+            "has_previous": page > 1,
+        },
     }
 
 

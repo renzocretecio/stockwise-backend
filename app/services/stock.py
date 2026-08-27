@@ -36,7 +36,6 @@ class StockService:
                 | (Product.sku.ilike(search_term))
             )
 
-        # Fetch all matching rows first (for summary + status filter, since status is computed)
         all_rows = db.execute(query).all()
 
         items = []
@@ -79,7 +78,6 @@ class StockService:
         total = len(items)
         total_pages = (total + page_size - 1) // page_size if total > 0 else 0
 
-        # Paginate in-memory (status is computed, can't paginate at DB level easily)
         offset = (page - 1) * page_size
         paginated_items = items[offset : offset + page_size]
 
@@ -138,10 +136,11 @@ class StockService:
                 "product_id": str(movement.product_id),
                 "product_name": product.name,
                 "movement_type": movement.movement_type,
-                "quantity_change": float(movement.quantity_change),
-                "balance_after": float(movement.balance_after),
+                "quantity_change": float(movement.quantity),
+                "unit_cost": float(movement.unit_cost) if movement.unit_cost is not None else None,
                 "reference_type": movement.reference_type,
                 "reference_id": str(movement.reference_id) if movement.reference_id else None,
+                "reason": movement.reason,
                 "notes": movement.notes,
                 "created_by": str(movement.created_by) if movement.created_by else None,
                 "created_at": movement.created_at,
@@ -215,11 +214,12 @@ class StockService:
                 business_id=business_id,
                 product_id=payload.product_id,
                 movement_type=MovementType.ADJUSTMENT.value,
-                quantity_change=payload.quantity_change,
-                balance_after=quantity_after,
+                quantity=payload.quantity_change,
+                unit_cost=stock_balance.average_cost,
                 reference_type="adjustment",
                 reference_id=None,
-                notes=f"[{payload.reason.value}] {payload.notes or ''}".strip(),
+                reason=payload.reason.value,
+                notes=payload.notes,
                 created_by=user_id,
             )
             db.add(movement)

@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from sqlmodel import Session, select
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -6,13 +6,247 @@ from fastapi import HTTPException, status
 from datetime import datetime, timezone
 
 from app.models.product import Product
-from app.models.sale import Sale, SaleItem
+from app.models.sale import Sale, SaleItem, SaleReturn, SaleReturnItem
 from app.models.inventory import StockBalance, StockMovement
-from app.schemas.sale import SaleCreate, SaleStatus
+from app.schemas.sale import SaleCreate, SaleReturnCreate, SaleStatus
 from app.schemas.stock import MovementType
 
 
 class SaleService:
+    @staticmethod
+    def get_returns(
+        business_id: str,
+        db: Session,
+        page: int = 1,
+        page_size: int = 20,
+        search: str | None = None,
+    ) -> dict:
+        """Get paginated return history with original sale references and totals."""
+        query = (
+            select(SaleReturn, Sale.reference_number)
+            .join(Sale, Sale.id == SaleReturn.sale_id)
+            .where(SaleReturn.business_id == business_id)
+        )
+
+        if search:
+            pattern = f"%{search.strip()}%"
+            query = query.where(
+                Sale.reference_number.ilike(pattern)
+                | SaleReturn.reason.ilike(pattern)
+            )
+
+        total = db.execute(
+            select(func.count()).select_from(query.subquery())
+        ).scalar_one()
+        rows = db.execute(
+            query.order_by(SaleReturn.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+
+        returns = []
+        for sale_return, reference_number in rows:
+            item_summary = db.execute(
+                select(
+                    func.count(SaleReturnItem.id),
+                    func.coalesce(func.sum(SaleReturnItem.quantity), 0),
+                ).where(SaleReturnItem.return_id == sale_return.id)
+            ).one()
+            returns.append({
+                "id": str(sale_return.id),
+                "sale_id": str(sale_return.sale_id),
+                "sale_reference_number": reference_number,
+                "status": sale_return.status,
+                "reason": sale_return.reason,
+                "notes": sale_return.notes,
+                "refund_amount": float(sale_return.refund_amount),
+                "item_count": item_summary[0],
+                "total_quantity": float(item_summary[1]),
+                "created_by": str(sale_return.created_by) if sale_return.created_by else None,
+                "created_at": sale_return.created_at,
+            })
+
+        total_pages = (total + page_size - 1) // page_size if total else 0
+        return {
+            "returns": returns,
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "total_pages": total_pages,
+                "has_next": page < total_pages,
+                "has_previous": page > 1,
+            },
+        }
+
+    @staticmethod
+    def create_return(
+        business_id: str,
+        sale_id: str,
+        payload: SaleReturnCreate,
+        user_id: str,
+        db: Session,
+    ) -> dict:
+        """Create a partial/full return, restore stock, and record movements atomically."""
+        try:
+            # Locking the sale serializes returns for the same sale on databases
+            # that support SELECT ... FOR UPDATE (including PostgreSQL).
+            sale = db.execute(
+                select(Sale)
+                .where(Sale.business_id == business_id, Sale.id == sale_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+
+            if not sale:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sale not found")
+
+            returnable_statuses = {
+                SaleStatus.COMPLETED.value,
+                SaleStatus.PARTIALLY_RETURNED.value,
+            }
+            if sale.status not in returnable_statuses:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Cannot return a sale with status '{sale.status}'",
+                )
+
+            sale_items = db.execute(
+                select(SaleItem).where(SaleItem.sale_id == sale.id)
+            ).scalars().all()
+            sale_items_by_id = {str(item.id): item for item in sale_items}
+
+            requested_ids = {item.sale_item_id for item in payload.items}
+            missing_ids = requested_ids - set(sale_items_by_id)
+            if missing_ids:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Sale items do not belong to this sale: {', '.join(sorted(missing_ids))}",
+                )
+
+            returned_rows = db.execute(
+                select(
+                    SaleReturnItem.sale_item_id,
+                    func.coalesce(func.sum(SaleReturnItem.quantity), 0),
+                )
+                .join(SaleReturn, SaleReturn.id == SaleReturnItem.return_id)
+                .where(
+                    SaleReturn.sale_id == sale.id,
+                    SaleReturn.status == "completed",
+                )
+                .group_by(SaleReturnItem.sale_item_id)
+            ).all()
+            already_returned = {str(item_id): Decimal(quantity) for item_id, quantity in returned_rows}
+
+            for requested in payload.items:
+                original = sale_items_by_id[requested.sale_item_id]
+                remaining = Decimal(original.quantity) - already_returned.get(requested.sale_item_id, Decimal("0"))
+                if requested.quantity > remaining:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=(
+                            f"Return quantity for sale item {requested.sale_item_id} exceeds "
+                            f"remaining returnable quantity {remaining}"
+                        ),
+                    )
+
+            sale_return = SaleReturn(
+                business_id=business_id,
+                sale_id=sale.id,
+                status="completed",
+                reason=payload.reason,
+                notes=payload.notes,
+                refund_amount=Decimal("0"),
+                created_by=user_id,
+            )
+            db.add(sale_return)
+            db.flush()
+
+            refund_total = Decimal("0")
+            for requested in payload.items:
+                original = sale_items_by_id[requested.sale_item_id]
+                refund_amount = (
+                    Decimal(original.line_total) * requested.quantity / Decimal(original.quantity)
+                ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                refund_total += refund_amount
+
+                db.add(SaleReturnItem(
+                    return_id=sale_return.id,
+                    sale_item_id=original.id,
+                    product_id=original.product_id,
+                    quantity=requested.quantity,
+                    unit_price=original.unit_price,
+                    unit_cost=original.unit_cost,
+                    refund_amount=refund_amount,
+                ))
+
+                stock_balance = db.execute(
+                    select(StockBalance)
+                    .where(
+                        StockBalance.business_id == business_id,
+                        StockBalance.product_id == original.product_id,
+                    )
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if not stock_balance:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"Stock balance missing for product {original.product_id}",
+                    )
+
+                stock_balance.quantity += requested.quantity
+                db.add(stock_balance)
+                db.add(StockMovement(
+                    business_id=business_id,
+                    product_id=original.product_id,
+                    movement_type=MovementType.RETURN.value,
+                    quantity=requested.quantity,
+                    unit_cost=original.unit_cost,
+                    reference_type="return",
+                    reference_id=sale_return.id,
+                    reason=payload.reason,
+                    notes=payload.notes,
+                    created_by=user_id,
+                ))
+
+            sale_return.refund_amount = refund_total
+
+            requested_by_id = {item.sale_item_id: item.quantity for item in payload.items}
+            fully_returned = all(
+                already_returned.get(str(item.id), Decimal("0"))
+                + requested_by_id.get(str(item.id), Decimal("0"))
+                == Decimal(item.quantity)
+                for item in sale_items
+            )
+            sale.status = (
+                SaleStatus.RETURNED.value if fully_returned
+                else SaleStatus.PARTIALLY_RETURNED.value
+            )
+            db.add(sale)
+            db.commit()
+
+            return {
+                "return_id": str(sale_return.id),
+                "sale_id": str(sale.id),
+                "sale_status": sale.status,
+                "refund_amount": float(refund_total),
+                "message": "Return completed and stock restored",
+            }
+        except HTTPException:
+            db.rollback()
+            raise
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Return creation failed: Database constraint violation",
+            )
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Return creation failed: {str(e)}",
+            )
+
     @staticmethod
     def create_sale(
         business_id: str,
@@ -85,12 +319,6 @@ class SaleService:
                     detail="Discount cannot exceed subtotal + tax",
                 )
 
-            total_profit = Decimal("0")
-            for item in payload.items:
-                product = products_by_id[item.product_id]
-                line_profit = (item.unit_price - product.cost_price) * item.quantity
-                total_profit += line_profit
-
             # Create sale
             sale = Sale(
                 business_id=business_id,
@@ -101,7 +329,6 @@ class SaleService:
                 tax_amount=payload.tax_amount,
                 discount_amount=payload.discount_amount,
                 total_amount=total_amount,
-                total_profit=total_profit,
                 notes=payload.notes,
                 created_by=user_id,
             )
@@ -114,7 +341,6 @@ class SaleService:
                 stock_balance = stock_balances[item.product_id]
 
                 line_total = item.quantity * item.unit_price
-                line_profit = (item.unit_price - product.cost_price) * item.quantity
 
                 sale_item = SaleItem(
                     sale_id=sale.id,
@@ -134,8 +360,8 @@ class SaleService:
                     business_id=business_id,
                     product_id=item.product_id,
                     movement_type=MovementType.SALE.value,
-                    quantity_change=-item.quantity,
-                    balance_after=new_quantity,
+                    quantity=-item.quantity,               # ← was quantity_change
+                    unit_cost=product.cost_price,
                     reference_type="sale",
                     reference_id=sale.id,
                     notes=f"Sold via {payload.reference_number or sale.id}",
@@ -256,10 +482,12 @@ class SaleService:
         """Void a sale — reverses stock deduction"""
         try:
             sale = db.execute(
-                select(Sale).where(
+                select(Sale)
+                .where(
                     Sale.business_id == business_id,
                     Sale.id == sale_id,
                 )
+                .with_for_update()
             ).scalar_one_or_none()
 
             if not sale:
@@ -280,33 +508,42 @@ class SaleService:
 
             for item in items:
                 stock_balance = db.execute(
-                    select(StockBalance).where(
+                    select(StockBalance)
+                    .where(
                         StockBalance.business_id == business_id,
                         StockBalance.product_id == item.product_id,
                     )
+                    .with_for_update()
                 ).scalar_one_or_none()
 
-                if stock_balance:
-                    new_quantity = stock_balance.quantity + item.quantity
-                    stock_balance.quantity = new_quantity
-                    db.add(stock_balance)
+                if not stock_balance:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"Stock balance missing for product {item.product_id}",
+                    )
 
-                    movement = StockMovement(
+                new_quantity = stock_balance.quantity + item.quantity
+                stock_balance.quantity = new_quantity
+                db.add(stock_balance)
+
+                movement = StockMovement(
                         business_id=business_id,
                         product_id=item.product_id,
                         movement_type=MovementType.RETURN.value,
-                        quantity_change=item.quantity,
-                        balance_after=new_quantity,
+                        quantity=item.quantity,                # ← was quantity_change
+                        unit_cost=item.unit_cost,
                         reference_type="sale_void",
                         reference_id=sale.id,
-                        notes=f"Voided: {reason}",
+                        reason="void",
+                        notes=reason,
                         created_by=user_id,
-                    )
-                    db.add(movement)
+                )
+                db.add(movement)
 
             sale.status = SaleStatus.VOIDED.value
             sale.voided_at = datetime.now(timezone.utc)
             sale.void_reason = reason
+            sale.voided_by = user_id
             db.add(sale)
 
             db.commit()
@@ -336,8 +573,18 @@ class SaleService:
             .where(SaleItem.sale_id == sale.id)
         ).all()
 
-        items = [
-            {
+        items = []
+        for item, product in rows:
+            returned_quantity = db.execute(
+                select(func.coalesce(func.sum(SaleReturnItem.quantity), 0))
+                .join(SaleReturn, SaleReturn.id == SaleReturnItem.return_id)
+                .where(
+                    SaleReturnItem.sale_item_id == item.id,
+                    SaleReturn.status == "completed",
+                )
+            ).scalar_one()
+            returned_quantity = Decimal(returned_quantity)
+            items.append({
                 "id": str(item.id),
                 "product_id": str(item.product_id),
                 "product_name": product.name,
@@ -347,9 +594,11 @@ class SaleService:
                 "unit_cost": float(item.unit_cost),
                 "line_total": float(item.line_total),
                 "line_profit": float((item.unit_price - item.unit_cost) * item.quantity),
-            }
-            for item, product in rows
-        ]
+                "returned_quantity": float(returned_quantity),
+                "returnable_quantity": float(Decimal(item.quantity) - returned_quantity),
+            })
+
+        total_profit = sum(Decimal(str(item["line_profit"])) for item in items)
 
         return {
             "id": str(sale.id),
@@ -361,7 +610,7 @@ class SaleService:
             "tax_amount": float(sale.tax_amount),
             "discount_amount": float(sale.discount_amount),
             "total_amount": float(sale.total_amount),
-            "total_profit": float(sale.total_profit),
+            "total_profit": float(total_profit),
             "notes": sale.notes,
             "created_by": str(sale.created_by) if sale.created_by else None,
             "created_at": sale.created_at,
