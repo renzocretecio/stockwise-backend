@@ -28,20 +28,31 @@ class ReportService:
             )
         ).scalars().all()
 
-        completed_sales = [s for s in sales if s.status == SaleStatus.COMPLETED.value]
+        reportable_statuses = {
+            SaleStatus.COMPLETED.value,
+            SaleStatus.PARTIALLY_RETURNED.value,
+            SaleStatus.RETURNED.value,
+        }
+        completed_sales = [s for s in sales if s.status in reportable_statuses]
         voided_sales = [s for s in sales if s.status == SaleStatus.VOIDED.value]
 
         total_revenue = sum((s.total_amount for s in completed_sales), Decimal("0"))
-        total_profit = sum((s.total_profit for s in completed_sales), Decimal("0"))
 
         # Items sold count
         sale_ids = [s.id for s in completed_sales]
         total_items_sold = Decimal("0")
+        items = []
         if sale_ids:
             items = db.execute(
                 select(SaleItem).where(SaleItem.sale_id.in_(sale_ids))
             ).scalars().all()
             total_items_sold = sum((i.quantity for i in items), Decimal("0"))
+        profit_by_sale: dict[object, Decimal] = {}
+        for item in items:
+            profit_by_sale[item.sale_id] = profit_by_sale.get(
+                item.sale_id, Decimal("0")
+            ) + ((item.unit_price - item.unit_cost) * item.quantity)
+        total_profit = sum(profit_by_sale.values(), Decimal("0"))
 
         average_sale_value = (
             total_revenue / len(completed_sales) if completed_sales else Decimal("0")
@@ -54,7 +65,7 @@ class ReportService:
             if day_key not in by_day_map:
                 by_day_map[day_key] = {"revenue": Decimal("0"), "profit": Decimal("0"), "count": 0}
             by_day_map[day_key]["revenue"] += sale.total_amount
-            by_day_map[day_key]["profit"] += sale.total_profit
+            by_day_map[day_key]["profit"] += profit_by_sale.get(sale.id, Decimal("0"))
             by_day_map[day_key]["count"] += 1
 
         by_day = [
@@ -138,7 +149,10 @@ class ReportService:
         ).scalars().all()
 
         received = [p for p in purchases if p.status == PurchaseStatus.RECEIVED.value]
-        draft = [p for p in purchases if p.status == PurchaseStatus.DRAFT.value]
+        pending = [
+            p for p in purchases
+            if p.status in {PurchaseStatus.DRAFT.value, PurchaseStatus.ORDERED.value}
+        ]
 
         total_spent = sum((p.total_amount for p in received), Decimal("0"))
         average_purchase_value = (
@@ -156,7 +170,7 @@ class ReportService:
         # Group by day
         by_day_map: dict[str, dict] = {}
         for purchase in received:
-            day_key = purchase.created_at.date().isoformat()
+            day_key = (purchase.received_at or purchase.created_at).date().isoformat()
             if day_key not in by_day_map:
                 by_day_map[day_key] = {"spent": Decimal("0"), "count": 0}
             by_day_map[day_key]["spent"] += purchase.total_amount
@@ -199,7 +213,7 @@ class ReportService:
                 "total_spent": float(total_spent),
                 "total_items_received": float(total_items_received),
                 "average_purchase_value": float(average_purchase_value),
-                "pending_count": len(draft),
+                "pending_count": len(pending),
             },
             "by_day": by_day,
             "by_supplier": by_supplier,
@@ -238,7 +252,7 @@ class ReportService:
             elif stock_balance.quantity <= product.reorder_point:
                 low_stock_count += 1
 
-            category = product.category or "Uncategorized"
+            category = product.category.name if product.category else "Uncategorized"
             if category not in by_category_map:
                 by_category_map[category] = {
                     "product_count": 0,
@@ -284,7 +298,11 @@ class ReportService:
         sales = db.execute(
             select(Sale).where(
                 Sale.business_id == business_id,
-                Sale.status == SaleStatus.COMPLETED.value,
+                Sale.status.in_([
+                    SaleStatus.COMPLETED.value,
+                    SaleStatus.PARTIALLY_RETURNED.value,
+                    SaleStatus.RETURNED.value,
+                ]),
                 Sale.created_at >= cutoff,
             )
         ).scalars().all()
@@ -414,7 +432,7 @@ class ReportService:
             select(
                 StockMovement.movement_type,
                 func.count().label("total"),
-                func.sum(StockMovement.quantity_change).label("total_change"),
+                func.sum(StockMovement.quantity).label("total_change"),
             )
             .where(
                 StockMovement.business_id == business_id,
