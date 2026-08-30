@@ -17,7 +17,10 @@ from app.routes import (
     product_imports,
     inventory,
     inventory_counts,
-    reports
+    reports,
+    briefings,
+    dashboard,
+    intelligence,
 )
 
 Base.metadata.create_all(bind=engine)
@@ -50,6 +53,13 @@ app.include_router(categories.router, prefix=settings.API_V1_STR, tags=["categor
 app.include_router(inventory.router, prefix=settings.API_V1_STR, tags=["inventory"])
 app.include_router(inventory_counts.router, prefix=settings.API_V1_STR, tags=["inventory-counts"])
 app.include_router(reports.router, prefix=settings.API_V1_STR, tags=["reports"])
+app.include_router(briefings.router, prefix=settings.API_V1_STR, tags=["briefings"])
+app.include_router(dashboard.router, prefix=settings.API_V1_STR, tags=["dashboard"])
+app.include_router(
+    intelligence.router,
+    prefix=settings.API_V1_STR,
+    tags=["intelligence"],
+)
 
 @app.get("/health")
 async def health():

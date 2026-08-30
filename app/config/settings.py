@@ -1,6 +1,7 @@
 from functools import lru_cache
 
 from pydantic import Field
+from typing import Optional
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
@@ -21,14 +22,18 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_DAYS: int = 7
     
     # LLM
-    CLAUDE_API_KEY: str
+    CLAUDE_API_KEY: Optional[str] = None
     MODEL_NAME: str = "claude-3-5-haiku-20241022"
+    NARRATOR_PROVIDER: str = "template"
+    GEMINI_API_KEY: Optional[str] = None
+    GEMINI_MODEL: str = "gemini-3.6-flash"
+    NARRATOR_TIMEOUT_SECONDS: float = 60.0
     
     # Redis
     REDIS_URL: str = "redis://localhost:6379"
     
     # Frontend
-    ALLOWED_ORIGINS: str = "http://localhost:5173"
+    ALLOWED_ORIGINS: str = "http://localhost:3000"
 
     model_config = {
         "env_file": ".env",

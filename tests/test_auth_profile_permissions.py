@@ -23,11 +23,23 @@ def test_get_user_profile_includes_permissions():
     )
 
     def fake_query(model):
-        if model == __import__("app.models", fromlist=["BusinessMembership"]).BusinessMembership:
+        if (
+            model
+            == __import__(
+                "app.models", fromlist=["BusinessMembership"]
+            ).BusinessMembership
+        ):
             return SimpleNamespace(
-                filter=lambda *args, **kwargs: SimpleNamespace(all=lambda: [membership])
+                filter=lambda *args, **kwargs: SimpleNamespace(
+                    all=lambda: [membership]
+                )
             )
-        if getattr(model, "class_", None) == __import__("app.models.permission", fromlist=["Permission"]).Permission:
+        if (
+            getattr(model, "class_", None)
+            == __import__(
+                "app.models.permission", fromlist=["Permission"]
+            ).Permission
+        ):
             return SimpleNamespace(
                 join=lambda *args, **kwargs: SimpleNamespace(
                     filter=lambda *args, **kwargs: SimpleNamespace(
@@ -42,4 +54,7 @@ def test_get_user_profile_includes_permissions():
     result = get_user_profile(current_user=user, db=db)
 
     assert result["user"]["permissions"] == ["manage_sales", "view_products"]
-    assert result["businesses"][0]["permissions"] == ["manage_sales", "view_products"]
+    assert result["businesses"][0]["permissions"] == [
+        "manage_sales",
+        "view_products",
+    ]

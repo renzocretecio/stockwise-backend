@@ -8,6 +8,7 @@ from app.models.sale import Sale, SaleItem, SaleReturn, SaleReturnItem
 from app.models.inventory import StockBalance, StockMovement, InventoryCount, InventoryCountItem
 from app.models.audit import AuditLog
 from app.models.category import Category
+from app.models.briefing import InventoryBriefing, InventoryRecommendation
 
 __all__ = [
     "Base",
@@ -29,5 +30,7 @@ __all__ = [
     "InventoryCount",
     "InventoryCountItem",
     "AuditLog",
-    "Category"
+    "Category",
+    "InventoryBriefing",
+    "InventoryRecommendation",
 ]
