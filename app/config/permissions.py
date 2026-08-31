@@ -50,6 +50,14 @@ def require_permission(permission_key: str):
         context: RequestContext = Depends(get_request_context),
         session: Session = Depends(get_db),
     ) -> RequestContext:
+        role = context.membership.role
+        if (
+            role
+            and getattr(role, "is_system_role", False)
+            and role.name.lower() == "owner"
+        ):
+            return context
+
         statement = (
             select(Permission.id)
             .join(

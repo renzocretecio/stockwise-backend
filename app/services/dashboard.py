@@ -20,6 +20,16 @@ from app.models.sale import Sale, SaleItem, SaleReturn, SaleReturnItem
 
 SALE_STATUSES = ("completed", "partially_returned", "returned")
 FORECAST_DAYS = 30
+FORECAST_METHOD_LABELS = {
+    "manual_reorder_point": "Manual reorder settings",
+    "recent_moving_average": "Recent sales trend",
+    "weighted_moving_average_7_30": (
+        "Blended sales trend from the last 7 and 30 days"
+    ),
+    "weighted_moving_average_7_30_90": (
+        "Blended sales trend from the last 7, 30, and 90 days"
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -28,6 +38,10 @@ class ForecastCalculation:
     lead_time_demand: Decimal
     recommended_quantity: int
     method: str = "weighted_moving_average_7_30"
+
+
+def forecast_method_label(method: str) -> str:
+    return FORECAST_METHOD_LABELS.get(method, "Sales history trend")
 
 
 def calculate_reorder(
@@ -237,6 +251,7 @@ class DashboardService:
                 averages[90],
                 history_days,
             )
+            method_label = forecast_method_label(calculation.method)
             if calculation.recommended_quantity <= 0:
                 continue
             confidence = "low"
@@ -295,12 +310,12 @@ class DashboardService:
                     "order_by_date": today,
                     "forecast_period_days": FORECAST_DAYS,
                     "history_days": history_days,
-                    "forecast_method": calculation.method,
+                    "forecast_method": method_label,
                     "confidence": confidence,
                     "recently_out_of_stock": None,
                     "promotion_affected": None,
                     "explanation": [
-                        f"Method: {calculation.method}.",
+                        f"Method: {method_label}.",
                         "Lead-time demand is "
                         f"{calculation.lead_time_demand:.2f} units.",
                         "Available and incoming stock are subtracted before "

@@ -1,11 +1,123 @@
 import json
+import math
+from datetime import date, datetime, time
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from enum import Enum
 from typing import Any
+from uuid import UUID
 
 import httpx
 
 from app.config.settings import settings
 from app.schemas.briefing import BriefingNarration
 from app.schemas.intelligence import IntelligenceMessage
+
+
+TEMPORAL_KEYS = {
+    "as_of",
+    "date",
+    "time",
+    "timestamp",
+}
+AI_NUMBER_QUANTUM = Decimal("0.01")
+
+
+def _is_temporal_key(key: str | None) -> bool:
+    if not key:
+        return False
+    normalized = key.casefold()
+    return normalized in TEMPORAL_KEYS or normalized.endswith(
+        ("_at", "_date", "_time", "_timestamp")
+    )
+
+
+def _timezone_label(value: datetime | time) -> str:
+    if value.tzinfo is None:
+        return "timezone unspecified"
+    name = value.tzname()
+    return name or "timezone unspecified"
+
+
+def _format_datetime(value: datetime) -> str:
+    rendered = value.strftime("%b %d, %Y at %I:%M %p")
+    return f"{rendered} ({_timezone_label(value)})"
+
+
+def _format_date(value: date) -> str:
+    return value.strftime("%b %d, %Y")
+
+
+def _format_time(value: time) -> str:
+    rendered = value.strftime("%I:%M:%S %p")
+    return f"{rendered} ({_timezone_label(value)})"
+
+
+def _format_temporal_string(value: str, key: str | None) -> str:
+    normalized = value.strip()
+    try:
+        key_name = key.casefold() if key else ""
+        if key_name.endswith("_time") or key_name == "time":
+            return _format_time(time.fromisoformat(normalized))
+        if "T" in normalized or " " in normalized:
+            parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+            return _format_datetime(parsed)
+        return _format_date(date.fromisoformat(normalized))
+    except ValueError:
+        return value
+
+
+def _format_number(value: Decimal | float) -> int | float | None:
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    decimal_value = value if isinstance(value, Decimal) else Decimal(str(value))
+    if not decimal_value.is_finite():
+        return None
+    try:
+        rounded = decimal_value.quantize(
+            AI_NUMBER_QUANTUM,
+            rounding=ROUND_HALF_UP,
+        )
+    except InvalidOperation:
+        return None
+    if rounded == 0:
+        return 0
+    if rounded == rounded.to_integral_value():
+        return int(rounded)
+    return float(rounded)
+
+
+def format_ai_context(value: Any, key: str | None = None) -> Any:
+    """Return a concise AI-facing copy without missing values."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return _format_datetime(value)
+    if isinstance(value, date):
+        return _format_date(value)
+    if isinstance(value, time):
+        return _format_time(value)
+    if isinstance(value, str) and _is_temporal_key(key):
+        return _format_temporal_string(value, key)
+    if isinstance(value, (Decimal, float)):
+        return _format_number(value)
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, Enum):
+        return format_ai_context(value.value, key)
+    if isinstance(value, dict):
+        formatted = {}
+        for item_key, item_value in value.items():
+            formatted_value = format_ai_context(
+                item_value,
+                str(item_key),
+            )
+            if formatted_value is not None:
+                formatted[item_key] = formatted_value
+        return formatted
+    if isinstance(value, (list, tuple, set)):
+        formatted = [format_ai_context(item, key) for item in value]
+        return [item for item in formatted if item is not None]
+    return value
 
 
 class GeminiCommunicationService:
@@ -27,9 +139,11 @@ class GeminiCommunicationService:
                             "text": json.dumps(
                                 {
                                     "instruction": instruction,
-                                    "intelligence_context": context,
+                                    "intelligence_context": (
+                                        format_ai_context(context)
+                                    ),
                                 },
-                                default=str,
+                                allow_nan=False,
                             )
                         }
                     ]
@@ -62,11 +176,7 @@ class GeminiCommunicationService:
                 f"{response.status_code}{suffix}"
             )
         data = response.json()
-        parts = (
-            data.get("candidates", [{}])[0]
-            .get("content", {})
-            .get("parts", [])
-        )
+        parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
         text = next(
             (
                 part["text"]
@@ -148,6 +258,4 @@ class GeminiCommunicationService:
 
 
 def communication_enabled() -> bool:
-    return bool(
-        settings.NARRATOR_PROVIDER == "gemini" and settings.GEMINI_API_KEY
-    )
+    return bool(settings.NARRATOR_PROVIDER == "gemini" and settings.GEMINI_API_KEY)

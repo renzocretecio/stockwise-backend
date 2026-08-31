@@ -12,8 +12,9 @@ class CountScope(str, Enum):
 
 
 class CountStatus(str, Enum):
+    DRAFT = "draft"
     IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
+    FINALIZED = "finalized"
     CANCELLED = "cancelled"
 
 

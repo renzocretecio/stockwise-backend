@@ -3,6 +3,7 @@ from decimal import Decimal
 from app.services.dashboard import (
     calculate_reorder,
     count_variance_threshold,
+    forecast_method_label,
 )
 
 
@@ -72,6 +73,13 @@ def test_recent_product_uses_recent_average():
     )
     assert result.daily_demand == Decimal("4")
     assert result.method == "recent_moving_average"
+
+
+def test_forecast_method_has_a_user_friendly_label():
+    assert forecast_method_label("weighted_moving_average_7_30_90") == (
+        "Blended sales trend from the last 7, 30, and 90 days"
+    )
+    assert forecast_method_label("unexpected_method") == "Sales history trend"
 
 
 def test_count_variance_threshold_uses_historical_average():

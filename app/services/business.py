@@ -1,11 +1,39 @@
+import re
+import unicodedata
 from sqlalchemy.orm import Session
 from app.models import Business, BusinessMembership, User, Role
 from app.models.permission import Permission, RolePermission
-from datetime import datetime
+from datetime import datetime, timezone
+
+from app.schemas.business import BusinessProfileUpdate
 
 class BusinessService:
     @staticmethod
-    def create_business(user_id: str, name: str, slug: str, currency_code: str, timezone: str, db: Session):
+    def generate_unique_slug(name: str, db: Session) -> str:
+        normalized = unicodedata.normalize("NFKD", name)
+        ascii_name = normalized.encode("ascii", "ignore").decode("ascii")
+        base_slug = re.sub(r"[^a-z0-9]+", "-", ascii_name.lower())
+        base_slug = base_slug.strip("-")[:140] or "business"
+        slug = base_slug
+        suffix = 2
+
+        while db.query(Business.id).filter(Business.slug == slug).first():
+            slug = f"{base_slug}-{suffix}"
+            suffix += 1
+
+        return slug
+
+    @staticmethod
+    def create_business(
+        user_id: str,
+        name: str,
+        slug: str,
+        currency_code: str,
+        timezone: str,
+        db: Session,
+        *,
+        commit: bool = True,
+    ):
         """Create a new business and make user the owner"""
         existing = db.query(Business).filter(Business.slug == slug).first()
         if existing:
@@ -70,14 +98,35 @@ class BusinessService:
         )
         db.add(membership)
         
-        db.commit()
-        db.refresh(business)
+        if commit:
+            db.commit()
+            db.refresh(business)
+        else:
+            db.flush()
         return business
     
     @staticmethod
     def get_business(business_id: str, db: Session):
         """Get business by ID"""
         return db.query(Business).filter(Business.id == business_id).first()
+
+    @staticmethod
+    def update_profile(
+        business: Business,
+        payload: BusinessProfileUpdate,
+        db: Session,
+    ) -> Business:
+        updates = payload.model_dump(exclude={"complete_onboarding"})
+        for field, value in updates.items():
+            setattr(business, field, value)
+
+        if payload.complete_onboarding:
+            business.onboarding_completed = True
+            business.onboarding_completed_at = datetime.now(timezone.utc)
+
+        db.commit()
+        db.refresh(business)
+        return business
     
     @staticmethod
     def get_user_businesses(user_id: str, db: Session):
@@ -94,6 +143,8 @@ class BusinessService:
                 "role": m.role.name,
                 "slug": m.business.slug,
                 "currency_code": m.business.currency_code,
+                "timezone": m.business.timezone,
+                "onboarding_completed": m.business.onboarding_completed,
             }
             for m in memberships
         ]

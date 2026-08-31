@@ -2,23 +2,17 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.config.database import get_db
 from app.core.security import get_current_user
-from app.models.auth import User
+from app.models import BusinessMembership, User
+from app.models.permission import Permission, RolePermission
+from app.schemas.auth import (
+    LoginRequest,
+    SignUpWithBusinessRequest,
+    UserProfileUpdate,
+)
 from app.services.auth import AuthService
 from app.services.business import BusinessService
-from app.schemas.auth import LoginRequest
-from pydantic import BaseModel
-from app.models import Business, BusinessMembership, User, Role
-from app.models.permission import Permission, RolePermission
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-class SignUpWithBusinessRequest(BaseModel):
-    email: str
-    password: str
-    first_name: str
-    last_name: str = None
-    business_name: str
-    business_slug: str
 
 @router.post("/signup")
 async def signup(req: SignUpWithBusinessRequest, db: Session = Depends(get_db)):
@@ -30,20 +24,28 @@ async def signup(req: SignUpWithBusinessRequest, db: Session = Depends(get_db)):
             req.password,
             req.first_name,
             req.last_name or "",
-            db
+            db,
+            commit=False,
         )
         
         user_id = user_result["user"]["id"]
         
         # Create business
+        business_slug = req.business_slug or (
+            BusinessService.generate_unique_slug(req.business_name, db)
+        )
         business = BusinessService.create_business(
             user_id,
             req.business_name,
-            req.business_slug,
-            "PHP",
-            "Asia/Manila",
-            db
+            business_slug,
+            req.currency_code,
+            req.timezone,
+            db,
+            commit=False,
         )
+
+        db.commit()
+        db.refresh(business)
         
         return {
             "success": True,
@@ -53,13 +55,20 @@ async def signup(req: SignUpWithBusinessRequest, db: Session = Depends(get_db)):
                 "name": business.name,
                 "slug": business.slug,
                 "currency_code": business.currency_code,
+                "timezone": business.timezone,
+                "onboarding_completed": business.onboarding_completed,
             },
             "access_token": user_result["access_token"]
         }
     except HTTPException as e:
+        db.rollback()
         raise e
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unable to create account",
+        ) from e
 
 @router.post("/login")
 async def login(req: LoginRequest, db: Session = Depends(get_db)):
@@ -86,12 +95,23 @@ def get_user_profile(
     user_permissions = set()
 
     for membership in memberships:
-        permission_rows = (
-            db.query(Permission.key)
-            .join(RolePermission, RolePermission.permission_id == Permission.id)
-            .filter(RolePermission.role_id == membership.role_id)
-            .all()
+        is_owner = (
+            membership.role
+            and getattr(membership.role, "is_system_role", False)
+            and membership.role.name.lower() == "owner"
         )
+        if is_owner:
+            permission_rows = db.query(Permission.key).all()
+        else:
+            permission_rows = (
+                db.query(Permission.key)
+                .join(
+                    RolePermission,
+                    RolePermission.permission_id == Permission.id,
+                )
+                .filter(RolePermission.role_id == membership.role_id)
+                .all()
+            )
         permissions = sorted({row[0] for row in permission_rows})
         user_permissions.update(permissions)
 
@@ -103,6 +123,16 @@ def get_user_profile(
                 membership.business,
                 "currency_code",
                 "PHP",
+            ),
+            "timezone": getattr(
+                membership.business,
+                "timezone",
+                "Asia/Manila",
+            ),
+            "onboarding_completed": getattr(
+                membership.business,
+                "onboarding_completed",
+                True,
             ),
             "role": membership.role.name if membership.role else None,
             "permissions": permissions,
@@ -118,4 +148,25 @@ def get_user_profile(
             "permissions": sorted(user_permissions),
         },
         "businesses": business_payload,
+    }
+
+
+@router.patch("/me")
+def update_user_profile(
+    payload: UserProfileUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    current_user.first_name = payload.first_name
+    current_user.last_name = payload.last_name
+    db.commit()
+    db.refresh(current_user)
+    return {
+        "success": True,
+        "user": {
+            "id": str(current_user.id),
+            "email": current_user.email,
+            "first_name": current_user.first_name,
+            "last_name": current_user.last_name,
+        },
     }

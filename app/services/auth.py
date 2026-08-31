@@ -1,15 +1,28 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from app.models import User, Business, BusinessMembership, Role
-from app.utils.security import hash_password, verify_password, create_access_token
+from app.utils.security import (
+    create_access_token,
+    hash_password,
+    verify_password,
+)
 from fastapi import HTTPException, status
 from datetime import datetime
 
 class AuthService:
     @staticmethod
-    def register(email: str, password: str, first_name: str, last_name: str, db: Session):
+    def register(
+        email: str,
+        password: str,
+        first_name: str,
+        last_name: str,
+        db: Session,
+        *,
+        commit: bool = True,
+    ):
         """Register a new user"""
-        user = db.query(User).filter(User.email == email).first()
+        normalized_email = email.strip().lower()
+        user = db.query(User).filter(User.email == normalized_email).first()
         if user:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -18,14 +31,17 @@ class AuthService:
         
         hashed_password = hash_password(password)
         new_user = User(
-            email=email,
+            email=normalized_email,
             password_hash=hashed_password,
             first_name=first_name,
             last_name=last_name
         )
         db.add(new_user)
-        db.commit()
-        db.refresh(new_user)
+        if commit:
+            db.commit()
+            db.refresh(new_user)
+        else:
+            db.flush()
         
         token = create_access_token(new_user.id)
         return {
@@ -40,7 +56,8 @@ class AuthService:
     @staticmethod
     def login(email: str, password: str, db: Session):
         """Login user"""
-        user = db.query(User).filter(User.email == email).first()
+        normalized_email = email.strip().lower()
+        user = db.query(User).filter(User.email == normalized_email).first()
         if not user or not verify_password(password, user.password_hash):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -62,6 +79,8 @@ class AuthService:
                 "role": m.role.name,
                 "slug": m.business.slug,
                 "currency_code": m.business.currency_code,
+                "timezone": m.business.timezone,
+                "onboarding_completed": m.business.onboarding_completed,
             }
             for m in memberships
         ]
@@ -77,7 +96,11 @@ class AuthService:
         }
     
     @staticmethod
-    def verify_access_to_business(user_id: str, business_id: str, db: Session) -> BusinessMembership:
+    def verify_access_to_business(
+        user_id: str,
+        business_id: str,
+        db: Session,
+    ) -> BusinessMembership:
         """Verify user has access to business"""
         membership = db.query(BusinessMembership).filter(
             and_(
