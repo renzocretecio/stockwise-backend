@@ -51,7 +51,8 @@ async def signup(req: SignUpWithBusinessRequest, db: Session = Depends(get_db)):
             "business": {
                 "id": str(business.id),
                 "name": business.name,
-                "slug": business.slug
+                "slug": business.slug,
+                "currency_code": business.currency_code,
             },
             "access_token": user_result["access_token"]
         }
@@ -98,6 +99,11 @@ def get_user_profile(
             "id": str(membership.business.id),
             "name": membership.business.name,
             "slug": membership.business.slug,
+            "currency_code": getattr(
+                membership.business,
+                "currency_code",
+                "PHP",
+            ),
             "role": membership.role.name if membership.role else None,
             "permissions": permissions,
         })
@@ -109,6 +115,7 @@ def get_user_profile(
             "email": current_user.email,
             "first_name": current_user.first_name,
             "last_name": current_user.last_name,
+            "permissions": sorted(user_permissions),
         },
         "businesses": business_payload,
     }

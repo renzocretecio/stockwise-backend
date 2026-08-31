@@ -59,7 +59,9 @@ class AuthService:
             {
                 "id": str(m.business_id),
                 "name": m.business.name,
-                "role": m.role.name
+                "role": m.role.name,
+                "slug": m.business.slug,
+                "currency_code": m.business.currency_code,
             }
             for m in memberships
         ]

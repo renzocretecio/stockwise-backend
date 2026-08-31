@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session
 from app.models import Business, BusinessMembership, User, Role
+from app.models.permission import Permission, RolePermission
 from datetime import datetime
 
 class BusinessService:
@@ -34,6 +35,30 @@ class BusinessService:
             )
             db.add(owner_role)
             db.flush()
+
+        # Business owners receive every registered permission. Permissions
+        # are linked explicitly so the same authorization path is used for
+        # owners and custom roles; the role name itself grants no access.
+        permissions = db.query(Permission).all()
+        existing_permission_ids = {
+            row[0]
+            for row in db.query(RolePermission.permission_id)
+            .filter(RolePermission.role_id == owner_role.id)
+            .all()
+        }
+        permission_links = [
+            {
+                "role_id": owner_role.id,
+                "permission_id": permission.id,
+            }
+            for permission in permissions
+            if permission.id not in existing_permission_ids
+        ]
+        if permission_links:
+            # Role uses the application's SQLAlchemy Base while the
+            # permission models use SQLModel metadata. A direct insert avoids
+            # cross-metadata ORM dependency sorting during flush.
+            db.execute(RolePermission.__table__.insert(), permission_links)
         
         # Add creator as owner
         membership = BusinessMembership(
@@ -67,7 +92,8 @@ class BusinessService:
                 "id": str(m.business_id),
                 "name": m.business.name,
                 "role": m.role.name,
-                "slug": m.business.slug
+                "slug": m.business.slug,
+                "currency_code": m.business.currency_code,
             }
             for m in memberships
         ]

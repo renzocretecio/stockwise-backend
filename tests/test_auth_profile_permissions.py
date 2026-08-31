@@ -11,7 +11,12 @@ def test_get_user_profile_includes_permissions():
         first_name="Test",
         last_name="User",
     )
-    business = SimpleNamespace(id=uuid4(), name="Acme", slug="acme")
+    business = SimpleNamespace(
+        id=uuid4(),
+        name="Acme",
+        slug="acme",
+        currency_code="USD",
+    )
     role = SimpleNamespace(name="Owner")
     membership = SimpleNamespace(
         user_id=user.id,
@@ -58,3 +63,4 @@ def test_get_user_profile_includes_permissions():
         "manage_sales",
         "view_products",
     ]
+    assert result["businesses"][0]["currency_code"] == "USD"
