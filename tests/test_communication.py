@@ -6,7 +6,7 @@ import pytest
 
 from app.services import communication
 from app.services.communication import (
-    GeminiCommunicationService,
+    GroqCommunicationService,
     format_ai_context,
 )
 
@@ -76,7 +76,7 @@ def test_format_ai_context_rounds_numbers_and_omits_missing_values():
 
 
 @pytest.mark.asyncio
-async def test_gemini_payload_receives_only_formatted_context(monkeypatch):
+async def test_groq_payload_receives_only_formatted_context(monkeypatch):
     captured = {}
 
     class FakeResponse:
@@ -86,11 +86,9 @@ async def test_gemini_payload_receives_only_formatted_context(monkeypatch):
         @staticmethod
         def json():
             return {
-                "candidates": [
+                "choices": [
                     {
-                        "content": {
-                            "parts": [{"text": "{}"}],
-                        }
+                        "message": {"content": "{}"}
                     }
                 ]
             }
@@ -110,7 +108,7 @@ async def test_gemini_payload_receives_only_formatted_context(monkeypatch):
             return FakeResponse()
 
     monkeypatch.setattr(communication.httpx, "AsyncClient", FakeClient)
-    await GeminiCommunicationService()._generate(
+    await GroqCommunicationService()._generate(
         "Explain",
         {
             "occurred_at": "2026-09-01T06:15:00+00:00",
@@ -121,10 +119,127 @@ async def test_gemini_payload_receives_only_formatted_context(monkeypatch):
         {"type": "object"},
     )
 
-    prompt = captured["json"]["contents"][0]["parts"][0]["text"]
+    prompt = captured["json"]["messages"][1]["content"]
     context = json.loads(prompt)["intelligence_context"]
     assert context["occurred_at"] == "Sep 01, 2026 at 06:15 AM (UTC)"
     assert context["order_by_date"] == "Sep 02, 2026"
     assert context["daily_demand"] == 4.54
     assert "estimated_stockout_date" not in context
     assert "null" not in prompt
+    assert captured["json"]["model"] == "openai/gpt-oss-20b"
+    assert captured["json"]["reasoning_effort"] == "low"
+    response_format = captured["json"]["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["strict"] is True
+    assert captured["headers"]["Authorization"].startswith("Bearer ")
+
+
+@pytest.mark.asyncio
+async def test_groq_explanation_clamps_lists_after_generation(monkeypatch):
+    service = GroqCommunicationService()
+    response = {
+        "answer": "Review the recommendation.",
+        "facts": [f"Fact {index}" for index in range(8)],
+        "estimates": [f"Estimate {index}" for index in range(6)],
+        "recommended_actions": [f"Action {index}" for index in range(6)],
+        "limitations": [f"Limitation {index}" for index in range(5)],
+    }
+
+    async def fake_generate(instruction, context, schema):
+        assert "maxItems" not in json.dumps(schema)
+        return json.dumps(response)
+
+    monkeypatch.setattr(service, "_generate", fake_generate)
+
+    message = await service.explain("Explain", {"forecast": {}})
+
+    assert len(message.facts) == 6
+    assert len(message.estimates) == 4
+    assert len(message.recommended_actions) == 4
+    assert len(message.limitations) == 3
+
+
+@pytest.mark.asyncio
+async def test_groq_explanation_requires_business_currency(monkeypatch):
+    service = GroqCommunicationService()
+
+    async def fake_generate(instruction, context, schema):
+        assert "Use business.currency_code" in instruction
+        assert "Never default to USD" in instruction
+        assert context["business"]["currency_code"] == "PHP"
+        return json.dumps(
+            {
+                "answer": "Revenue was ₱6,982.",
+                "facts": [],
+                "estimates": [],
+                "recommended_actions": [],
+                "limitations": [],
+            }
+        )
+
+    monkeypatch.setattr(service, "_generate", fake_generate)
+
+    message = await service.explain(
+        "Explain revenue",
+        {
+            "business": {"currency_code": "PHP"},
+            "total_revenue": 6982,
+        },
+    )
+
+    assert message.answer == "Revenue was ₱6,982."
+
+
+@pytest.mark.asyncio
+async def test_groq_briefing_requires_business_currency(monkeypatch):
+    service = GroqCommunicationService()
+
+    async def fake_generate(instruction, context, schema):
+        assert "business.currency_code" in instruction
+        assert "business.currency_symbol" in instruction
+        assert "Never default to USD" in instruction
+        assert context["business"] == {
+            "currency_code": "PHP",
+            "currency_symbol": "₱",
+        }
+        return json.dumps(
+            {
+                "headline": "Review ₱6,982 in sales",
+                "summary": ["One", "Two", "Three"],
+            }
+        )
+
+    monkeypatch.setattr(service, "_generate", fake_generate)
+
+    narration = await service.create_briefing(
+        {
+            "business": {
+                "currency_code": "PHP",
+                "currency_symbol": "₱",
+            },
+            "business_metrics": {"sales_today": 6982},
+        }
+    )
+
+    assert "₱6,982" in narration.headline
+
+
+@pytest.mark.asyncio
+async def test_groq_briefing_clamps_oversized_summary(monkeypatch):
+    service = GroqCommunicationService()
+    response = {
+        "headline": "Review inventory",
+        "summary": [f"Item {index}" for index in range(6)],
+    }
+
+    async def fake_generate(instruction, context, schema):
+        assert "exactly three string items" in instruction
+        assert "never more than three" in instruction
+        assert "maxItems" not in json.dumps(schema)
+        return json.dumps(response)
+
+    monkeypatch.setattr(service, "_generate", fake_generate)
+
+    narration = await service.create_briefing({})
+
+    assert narration.summary == ["Item 0", "Item 1", "Item 2"]

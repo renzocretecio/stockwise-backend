@@ -26,9 +26,24 @@ class SalesReportByDay(BaseModel):
 class SalesReportTopProduct(BaseModel):
     product_id: str
     product_name: str
+    sku: Optional[str] = None
     quantity_sold: float
+    units_per_day: float
+    current_stock: float
+    days_of_stock_remaining: Optional[float] = None
     revenue: float
     profit: float
+
+
+class SalesReportSlowProduct(BaseModel):
+    product_id: str
+    product_name: str
+    sku: Optional[str] = None
+    current_stock: float
+    inventory_value: float
+    last_sale_date: Optional[str] = None
+    days_without_sale: int
+    classification: str
 
 
 class SalesReportResponse(BaseModel):
@@ -37,6 +52,24 @@ class SalesReportResponse(BaseModel):
     summary: SalesReportSummary
     by_day: list[SalesReportByDay]
     top_products: list[SalesReportTopProduct]
+    slow_products: list[SalesReportSlowProduct]
+
+
+class OperationalMetricsResponse(BaseModel):
+    success: bool = True
+    period_days: int
+    stock_accuracy_rate: Optional[float] = None
+    counted_items: int
+    accurate_items: int
+    inventory_days: Optional[float] = None
+    inventory_value: float
+    period_cogs: float
+    shrinkage_rate: Optional[float] = None
+    shrinkage_units: float
+    shrinkage_value: float
+    receipt_completion_rate: Optional[float] = None
+    ordered_purchases: int
+    received_purchases: int
 
 
 # ============================================================================

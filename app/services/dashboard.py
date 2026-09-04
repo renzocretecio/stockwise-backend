@@ -5,6 +5,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.models.business import Business
@@ -86,6 +87,33 @@ def count_variance_threshold(history: list[Decimal]) -> Decimal:
         return Decimal("2")
     average = sum(map(abs, history), Decimal("0")) / len(history)
     return max(Decimal("2"), average * Decimal("3"))
+
+
+def calculate_sales_at_risk(
+    daily_demand: Decimal,
+    lead_time_days: int,
+    available_stock: Decimal,
+    incoming_stock: Decimal,
+    selling_price: Decimal,
+) -> Decimal:
+    """Estimate revenue exposed before replenishment can arrive."""
+    expected_demand = daily_demand * Decimal(lead_time_days)
+    usable_stock = max(
+        Decimal("0"),
+        available_stock + incoming_stock,
+    )
+    exposed_units = max(Decimal("0"), expected_demand - usable_stock)
+    return exposed_units * max(Decimal("0"), selling_price)
+
+
+def inventory_age_bucket(days_without_sale: int) -> str:
+    if days_without_sale >= 90:
+        return "dead_stock"
+    if days_without_sale >= 60:
+        return "at_risk"
+    if days_without_sale >= 30:
+        return "slowing"
+    return "active"
 
 
 class DashboardService:
@@ -182,7 +210,11 @@ class DashboardService:
         return total / days
 
     @staticmethod
-    def get_dashboard(business_id: str, db: Session) -> dict:
+    def get_dashboard(
+        business_id: str,
+        db: Session,
+        stock_days_threshold: int = 7,
+    ) -> dict:
         business = db.execute(
             select(Business).where(Business.id == business_id)
         ).scalar_one()
@@ -228,7 +260,40 @@ class DashboardService:
         for product_id, quantity in incoming_rows:
             incoming[str(product_id)] += Decimal(quantity)
 
+        delivery_dates = db.execute(
+            select(Purchase.expected_delivery_date).where(
+                Purchase.business_id == business_id,
+                Purchase.status == "ordered",
+                Purchase.expected_delivery_date.is_not(None),
+            )
+        ).scalars().all()
+
+        last_sale_rows = db.execute(
+            select(
+                SaleItem.product_id,
+                func.max(Sale.sale_date),
+            )
+            .join(Sale, Sale.id == SaleItem.sale_id)
+            .where(
+                Sale.business_id == business_id,
+                Sale.status.in_(SALE_STATUSES),
+            )
+            .group_by(SaleItem.product_id)
+        ).all()
+        last_sale_by_product = dict(last_sale_rows)
+
         forecasts = []
+        below_days_of_stock = 0
+        estimated_sales_at_risk = Decimal("0")
+        aging = {
+            key: {"sku_count": 0, "inventory_value": Decimal("0")}
+            for key in ("active", "slowing", "at_risk", "dead_stock")
+        }
+        efficiency_actions = []
+        slow_moving_skus = 0
+        perishable_skus = 0
+        overstocked_products = 0
+        capital_tied_up = Decimal("0")
         for product, balance in rows:
             product_daily = daily_sales.get(str(product.id), {})
             created = product.created_at.astimezone(zone).date()
@@ -250,6 +315,84 @@ class DashboardService:
                 product.lead_time_days,
                 averages[90],
                 history_days,
+            )
+            stock_on_hand = max(
+                Decimal("0"),
+                Decimal(balance.quantity),
+            )
+            inventory_value = stock_on_hand * Decimal(
+                balance.average_cost
+            )
+            last_sale_at = last_sale_by_product.get(product.id)
+            activity_at = last_sale_at or product.created_at
+            if activity_at.tzinfo is None:
+                activity_at = activity_at.replace(tzinfo=timezone.utc)
+            activity_date = activity_at.astimezone(zone).date()
+            days_without_sale = max((today - activity_date).days, 0)
+            classification = inventory_age_bucket(days_without_sale)
+
+            if stock_on_hand > 0:
+                aging[classification]["sku_count"] += 1
+                aging[classification]["inventory_value"] += inventory_value
+                if classification in ("slowing", "at_risk"):
+                    slow_moving_skus += 1
+                if product.is_perishable:
+                    perishable_skus += 1
+
+            target_stock = calculation.lead_time_demand
+            target_stock += Decimal(product.safety_stock)
+            excess_units = max(
+                Decimal("0"),
+                max(Decimal("0"), available) - target_stock,
+            )
+            excess_value = excess_units * Decimal(balance.average_cost)
+            is_overstocked = excess_units > 0
+            if is_overstocked:
+                overstocked_products += 1
+                capital_tied_up += excess_value
+
+            action = None
+            if classification == "dead_stock":
+                action = "Discount, bundle, transfer, or discontinue"
+            elif product.is_perishable:
+                action = "Review shelf life and prioritize FIFO selling"
+            elif classification == "at_risk":
+                action = "Promote the product and reduce future orders"
+            elif classification == "slowing":
+                action = "Review pricing and reduce reorder quantity"
+            elif is_overstocked:
+                action = "Pause purchasing and review sell-through"
+
+            if stock_on_hand > 0 and action:
+                efficiency_actions.append(
+                    {
+                        "product_id": str(product.id),
+                        "product_name": product.name,
+                        "sku": product.sku,
+                        "classification": classification,
+                        "current_stock": float(stock_on_hand),
+                        "inventory_value": float(inventory_value),
+                        "last_sale_date": activity_date
+                        if last_sale_at is not None
+                        else None,
+                        "days_without_sale": days_without_sale,
+                        "excess_units": float(excess_units),
+                        "excess_value": float(excess_value),
+                        "is_perishable": product.is_perishable,
+                        "suggested_action": action,
+                    }
+                )
+            if calculation.daily_demand > 0:
+                days_of_stock = max(Decimal("0"), available)
+                days_of_stock /= calculation.daily_demand
+                if days_of_stock < stock_days_threshold:
+                    below_days_of_stock += 1
+            estimated_sales_at_risk += calculate_sales_at_risk(
+                calculation.daily_demand,
+                product.lead_time_days,
+                available,
+                incoming[str(product.id)],
+                Decimal(product.selling_price),
             )
             method_label = forecast_method_label(calculation.method)
             if calculation.recommended_quantity <= 0:
@@ -297,6 +440,11 @@ class DashboardService:
                     "current_stock": float(available),
                     "incoming_stock": float(incoming[str(product.id)]),
                     "safety_stock": float(product.safety_stock),
+                    "estimated_unit_cost": float(balance.average_cost),
+                    "estimated_order_cost": float(
+                        Decimal(balance.average_cost)
+                        * calculation.recommended_quantity
+                    ),
                     "lead_time_days": product.lead_time_days,
                     "average_daily_sales_7d": float(averages[7]),
                     "average_daily_sales_30d": float(averages[30]),
@@ -335,6 +483,41 @@ class DashboardService:
             ),
             Decimal("0"),
         )
+        efficiency_actions.sort(
+            key=lambda item: (
+                {
+                    "dead_stock": 3,
+                    "at_risk": 2,
+                    "slowing": 1,
+                    "active": 0,
+                }[item["classification"]],
+                item["inventory_value"],
+            ),
+            reverse=True,
+        )
+        dead_stock_value = aging["dead_stock"]["inventory_value"]
+        positive_inventory_value = sum(
+            (
+                bucket["inventory_value"]
+                for bucket in aging.values()
+            ),
+            Decimal("0"),
+        )
+        available_rows = [
+            (
+                product,
+                Decimal(balance.quantity)
+                - Decimal(balance.reserved_quantity),
+            )
+            for product, balance in rows
+        ]
+        out_of_stock_count = sum(
+            available <= 0 for _, available in available_rows
+        )
+        low_stock_count = sum(
+            0 < available <= Decimal(product.reorder_point)
+            for product, available in available_rows
+        )
         return {
             "as_of": today,
             "kpis": {
@@ -342,16 +525,53 @@ class DashboardService:
                 "sales_yesterday": float(prior_revenue),
                 "sales_change_percent": change,
                 "inventory_value": float(value),
-                "low_stock_count": sum(
-                    1
-                    for product, balance in rows
-                    if 0
-                    < Decimal(balance.quantity)
-                    <= Decimal(product.reorder_point)
+                "low_stock_count": low_stock_count,
+                "out_of_stock_count": out_of_stock_count,
+            },
+            "inventory_risk": {
+                "stock_days_threshold": stock_days_threshold,
+                "out_of_stock_skus": out_of_stock_count,
+                "low_stock_skus": low_stock_count,
+                "below_reorder_point": sum(
+                    available < Decimal(product.reorder_point)
+                    for product, available in available_rows
                 ),
-                "out_of_stock_count": sum(
-                    Decimal(balance.quantity) <= 0 for _, balance in rows
+                "below_days_of_stock": below_days_of_stock,
+                "pending_reorder_recommendations": len(forecasts),
+                "expected_deliveries_today": sum(
+                    delivery_date == today
+                    for delivery_date in delivery_dates
                 ),
+                "late_purchase_orders": sum(
+                    delivery_date < today
+                    for delivery_date in delivery_dates
+                ),
+                "estimated_sales_at_risk": float(
+                    estimated_sales_at_risk
+                ),
+            },
+            "inventory_efficiency": {
+                "dead_stock_value": float(dead_stock_value),
+                "dead_stock_percentage": float(
+                    dead_stock_value / positive_inventory_value * 100
+                    if positive_inventory_value > 0
+                    else 0
+                ),
+                "slow_moving_skus": slow_moving_skus,
+                "perishable_skus": perishable_skus,
+                "overstocked_products": overstocked_products,
+                "capital_tied_up": float(capital_tied_up),
+                "aging_buckets": [
+                    {
+                        "key": key,
+                        "sku_count": bucket["sku_count"],
+                        "inventory_value": float(
+                            bucket["inventory_value"]
+                        ),
+                    }
+                    for key, bucket in aging.items()
+                ],
+                "actions": efficiency_actions[:10],
             },
             "forecasts": forecasts[:10],
             "anomalies": DashboardService._anomalies(

@@ -120,40 +120,42 @@ def format_ai_context(value: Any, key: str | None = None) -> Any:
     return value
 
 
-class GeminiCommunicationService:
+class GroqCommunicationService:
     """Communicates backend intelligence without calculating business facts."""
 
-    provider = "gemini"
+    provider = "groq"
 
     def __init__(self):
-        self.model = settings.GEMINI_MODEL
+        self.model = settings.GROQ_MODEL
 
     async def _generate(self, instruction: str, context: dict, schema: dict):
-        api_root = "https://generativelanguage.googleapis.com/v1beta/models"
-        url = f"{api_root}/{self.model}:generateContent"
+        url = "https://api.groq.com/openai/v1/chat/completions"
         payload = {
-            "contents": [
+            "model": self.model,
+            "messages": [
                 {
-                    "parts": [
+                    "role": "system",
+                    "content": instruction,
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
                         {
-                            "text": json.dumps(
-                                {
-                                    "instruction": instruction,
-                                    "intelligence_context": (
-                                        format_ai_context(context)
-                                    ),
-                                },
-                                allow_nan=False,
-                            )
-                        }
-                    ]
+                            "intelligence_context": format_ai_context(context)
+                        },
+                        allow_nan=False,
+                    ),
                 }
             ],
-            "generationConfig": {
-                "maxOutputTokens": 1200,
-                "thinkingConfig": {"thinkingLevel": "minimal"},
-                "responseMimeType": "application/json",
-                "responseSchema": schema,
+            "max_completion_tokens": 1200,
+            "reasoning_effort": "low",
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "stockwise_response",
+                    "strict": True,
+                    "schema": schema,
+                },
             },
         }
         async with httpx.AsyncClient(
@@ -161,7 +163,10 @@ class GeminiCommunicationService:
         ) as client:
             response = await client.post(
                 url,
-                headers={"x-goog-api-key": settings.GEMINI_API_KEY},
+                headers={
+                    "Authorization": f"Bearer {settings.GROQ_API_KEY}",
+                    "Content-Type": "application/json",
+                },
                 json=payload,
             )
         if not response.is_success:
@@ -172,77 +177,103 @@ class GeminiCommunicationService:
                 pass
             suffix = f": {message[:500]}" if message else ""
             raise RuntimeError(
-                f"Gemini API request failed with status "
+                f"Groq API request failed with status "
                 f"{response.status_code}{suffix}"
             )
         data = response.json()
-        parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-        text = next(
-            (
-                part["text"]
-                for part in parts
-                if part.get("text") and not part.get("thought")
-            ),
-            None,
-        )
+        text = data.get("choices", [{}])[0].get("message", {}).get("content")
         if not text:
-            raise RuntimeError("Gemini API returned no final text response")
+            raise RuntimeError("Groq API returned no final text response")
         return text
 
     async def create_briefing(self, context: dict) -> BriefingNarration:
         instruction = (
             "Use only the supplied facts. Do not recalculate or invent any "
-            "number, date, cause, or recommendation. Write a short headline "
-            "and exactly three summary items. Put the most urgent approved "
-            "action first. Clearly qualify estimates and low confidence."
+            "number, date, cause, or recommendation. Return a JSON object "
+            "with a short headline and a summary array containing exactly "
+            "three string items, never more than three. Each item should be "
+            "one sentence; do not split one item into multiple array items. "
+            "The UI combines those three items into one short recap, so make "
+            "them a cohesive two-to-four sentence narrative with no headings, "
+            "labels, or action commands. "
+            "When daily_recap is present, cover what happened on report_date, "
+            "then the relevant recorded driver, return, receipt, or adjustment, "
+            "then the most urgent approved inventory risk. Clearly qualify "
+            "estimates and low confidence. "
+            "Use business.currency_code and business.currency_symbol for "
+            "every monetary value. Never default to USD or use $ unless "
+            "the business currency code is USD."
         )
         schema = {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "headline": {"type": "string"},
                 "summary": {
                     "type": "array",
                     "items": {"type": "string"},
                     "minItems": 3,
-                    "maxItems": 3,
                 },
             },
             "required": ["headline", "summary"],
         }
         text = await self._generate(instruction, context, schema)
-        return BriefingNarration.model_validate_json(text)
+        data = json.loads(text)
+        data["summary"] = data["summary"][:3]
+        return BriefingNarration.model_validate(data)
+
+    async def create_weekly_owner_summary(self, facts: dict) -> str:
+        instruction = (
+            "Turn the supplied weekly owner summary facts into a 3-to-4 "
+            "sentence executive summary. Use only the supplied facts. Do not "
+            "calculate, alter, round, reinterpret, or introduce any number, "
+            "date, cause, product, or recommendation. Mention the period and "
+            "the most important sales and inventory facts, and keep the tone "
+            "clear and useful to a business owner. Return plain text only, "
+            "with no heading, bullets, markdown, or labels."
+        )
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"summary": {"type": "string"}},
+            "required": ["summary"],
+        }
+        text = await self._generate(instruction, facts, schema)
+        return json.loads(text)["summary"]
 
     async def explain(self, task: str, context: dict) -> IntelligenceMessage:
         instruction = (
             f"Task: {task}. Explain only the supplied intelligence context. "
             "Never calculate new values, infer missing causes, or introduce "
-            "facts not present in the context. Separate recorded facts, "
+            "facts not present in the context. Use business.currency_code "
+            "for every monetary value and use its appropriate symbol. Never "
+            "default to USD or use $ unless the currency code is USD. "
+            "Separate recorded facts, "
             "estimates, approved recommendations, and limitations. Keep the "
-            "answer concise and useful to a small-business owner."
+            "answer concise and useful to a small-business owner. Return no "
+            "more than 6 facts, 4 estimates, 4 recommended actions, and 3 "
+            "limitations."
         )
         schema = {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "answer": {"type": "string"},
                 "facts": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "maxItems": 6,
                 },
                 "estimates": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "maxItems": 4,
                 },
                 "recommended_actions": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "maxItems": 4,
                 },
                 "limitations": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "maxItems": 3,
                 },
             },
             "required": [
@@ -254,8 +285,16 @@ class GeminiCommunicationService:
             ],
         }
         text = await self._generate(instruction, context, schema)
-        return IntelligenceMessage.model_validate_json(text)
+        data = json.loads(text)
+        for field, limit in {
+            "facts": 6,
+            "estimates": 4,
+            "recommended_actions": 4,
+            "limitations": 3,
+        }.items():
+            data[field] = data[field][:limit]
+        return IntelligenceMessage.model_validate(data)
 
 
 def communication_enabled() -> bool:
-    return bool(settings.NARRATOR_PROVIDER == "gemini" and settings.GEMINI_API_KEY)
+    return bool(settings.NARRATOR_PROVIDER == "groq" and settings.GROQ_API_KEY)

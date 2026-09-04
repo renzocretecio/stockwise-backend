@@ -40,6 +40,7 @@ async def list_purchases(
     page_size: int = Query(default=20, ge=1, le=100),
     status_filter: str | None = Query(default=None, alias="status"),
     supplier_id: str | None = Query(default=None),
+    search: str | None = Query(default=None, max_length=100),
     context: RequestContext = Depends(require_permission("purchases.read")),
     db: Session = Depends(get_db),
 ):
@@ -51,6 +52,7 @@ async def list_purchases(
         page_size=page_size,
         status_filter=status_filter,
         supplier_id=supplier_id,
+        search=search,
     )
     return {"success": True, **result}
 

@@ -14,13 +14,30 @@ from app.models.inventory import (
     InventoryCount,
     InventoryCountItem,
     StockBalance,
+    StockMovement,
 )
 from app.models.product import Product
 from app.models.purchase import Purchase, PurchaseItem
-from app.models.sale import Sale, SaleItem
+from app.models.sale import Sale, SaleItem, SaleReturn, SaleReturnItem
 from app.schemas.briefing import BriefingNarration
-from app.services.communication import GeminiCommunicationService
+from app.services.communication import GroqCommunicationService
 from app.services.dashboard import DashboardService
+
+
+CURRENCY_SYMBOLS = {
+    "AUD": "A$",
+    "CAD": "C$",
+    "CNY": "¥",
+    "EUR": "€",
+    "GBP": "£",
+    "HKD": "HK$",
+    "INR": "₹",
+    "JPY": "¥",
+    "KRW": "₩",
+    "PHP": "₱",
+    "SGD": "S$",
+    "USD": "$",
+}
 
 
 @dataclass
@@ -41,6 +58,25 @@ class ProductMetrics:
     latest_count_variance: Decimal | None
 
 
+@dataclass
+class DailyBusinessRecap:
+    date: date
+    gross_sales: Decimal
+    net_sales: Decimal
+    gross_profit: Decimal
+    sales_count: int
+    items_sold: Decimal
+    return_count: int
+    refund_amount: Decimal
+    received_purchase_count: int
+    received_purchase_value: Decimal
+    adjustment_count: int
+    adjustment_quantity: Decimal
+    sales_change_percent: Decimal | None
+    top_product_name: str | None
+    top_product_quantity: Decimal
+
+
 def _json_value(value):
     if isinstance(value, Decimal):
         return float(value)
@@ -51,7 +87,18 @@ class TemplateNarrator:
     provider = "template"
     model = None
 
-    async def generate(self, recommendations: list[dict]) -> BriefingNarration:
+    async def generate(
+        self,
+        recommendations: list[dict],
+        daily_recap: DailyBusinessRecap | None = None,
+        currency_symbol: str = "",
+    ) -> BriefingNarration:
+        if daily_recap:
+            return self._daily_recap_narration(
+                recommendations,
+                daily_recap,
+                currency_symbol,
+            )
         if not recommendations:
             return BriefingNarration(
                 headline="Inventory is stable today",
@@ -75,21 +122,91 @@ class TemplateNarrator:
         headline = f"{item_count} inventory item{suffix} need attention"
         return BriefingNarration(headline=headline, summary=summary)
 
+    @staticmethod
+    def _money(value: Decimal, currency_symbol: str) -> str:
+        return f"{currency_symbol}{value.quantize(Decimal('0.01')):,.2f}"
 
-class GeminiNarrator:
-    provider = "gemini"
+    def _daily_recap_narration(
+        self,
+        recommendations: list[dict],
+        recap: DailyBusinessRecap,
+        currency_symbol: str,
+    ) -> BriefingNarration:
+        date_label = recap.date.strftime("%b %d")
+        headline = (
+            f"{date_label}: {self._money(recap.net_sales, currency_symbol)} "
+            f"in net sales"
+        )
+        activity = (
+            f"{recap.sales_count} completed sale(s) recorded "
+            f"{recap.items_sold.quantize(Decimal('0.001'))} item(s)."
+        )
+        if recap.sales_change_percent is not None:
+            direction = "up" if recap.sales_change_percent >= 0 else "down"
+            activity = (
+                f"Net sales were {direction} "
+                f"{abs(recap.sales_change_percent).quantize(Decimal('0.1'))}% "
+                "from the prior day. "
+                + activity
+            )
+        drivers: list[str] = []
+        if recap.top_product_name:
+            drivers.append(
+                f"{recap.top_product_name} was the top sales driver with "
+                f"{recap.top_product_quantity.quantize(Decimal('0.001'))} "
+                "unit(s) sold."
+            )
+        if recap.return_count:
+            drivers.append(
+                f"{recap.return_count} return(s) reduced revenue by "
+                f"{self._money(recap.refund_amount, currency_symbol)}."
+            )
+        if recap.received_purchase_count:
+            drivers.append(
+                f"{recap.received_purchase_count} purchase receipt(s) added "
+                f"{self._money(recap.received_purchase_value, currency_symbol)} "
+                "of incoming stock."
+            )
+        if recap.adjustment_count:
+            drivers.append(
+                f"{recap.adjustment_count} stock adjustment(s) changed "
+                f"inventory by {recap.adjustment_quantity.quantize(Decimal('0.001'))} "
+                "unit(s)."
+            )
+        driver = " ".join(drivers) or (
+            "No returns, purchase receipts, or stock adjustments were "
+            "recorded."
+        )
+        risk = (
+            f"{len(recommendations)} inventory item(s) need attention, led by "
+            f"{recommendations[0].get('title', 'the highest-priority risk')}."
+            if recommendations
+            else "No urgent inventory risks were identified."
+        )
+        return BriefingNarration(
+            headline=headline,
+            summary=[activity, driver, risk],
+        )
+
+
+class GroqNarrator:
+    provider = "groq"
 
     def __init__(self):
-        self.model = settings.GEMINI_MODEL
+        self.model = settings.GROQ_MODEL
 
     async def generate(
         self,
         recommendations: list[dict],
         dashboard_context: dict | None = None,
+        business_context: dict | None = None,
+        daily_recap: dict | None = None,
     ) -> BriefingNarration:
-        communicator = GeminiCommunicationService()
+        communicator = GroqCommunicationService()
         return await communicator.create_briefing(
             {
+                "business": business_context or {},
+                "daily_recap": daily_recap or {},
                 "recommendations": recommendations[:5],
                 "business_metrics": (
                     dashboard_context.get("kpis", {})
@@ -120,7 +237,32 @@ class GeminiNarrator:
 
 
 class BriefingService:
-    METRICS_VERSION = "v1"
+    METRICS_VERSION = "v4"
+    SALE_STATUSES = ("completed", "partially_returned", "returned")
+    ADJUSTMENT_MOVEMENT_TYPES = (
+        "adjustment",
+        "count_adjustment",
+        "damage",
+        "expired",
+    )
+
+    @staticmethod
+    def _currency_symbol(currency_code: str) -> str:
+        return CURRENCY_SYMBOLS.get(currency_code.upper(), currency_code)
+
+    @staticmethod
+    def _localize_narration(
+        narration: BriefingNarration, currency_code: str
+    ) -> BriefingNarration:
+        """Keep monetary narration consistent with the business currency."""
+        code = currency_code.upper()
+        if code == "USD":
+            return narration
+        symbol = BriefingService._currency_symbol(code)
+        return BriefingNarration(
+            headline=narration.headline.replace("$", symbol),
+            summary=[line.replace("$", symbol) for line in narration.summary],
+        )
 
     @staticmethod
     def _period(
@@ -134,6 +276,220 @@ class BriefingService:
         return start.astimezone(timezone.utc), (
             start + timedelta(days=1)
         ).astimezone(timezone.utc)
+
+    @staticmethod
+    def _sales_activity(
+        business_id: str,
+        period_start: datetime,
+        period_end: datetime,
+        db: Session,
+    ) -> dict:
+        sales = (
+            db.execute(
+                select(Sale).where(
+                    Sale.business_id == business_id,
+                    Sale.status.in_(BriefingService.SALE_STATUSES),
+                    Sale.sale_date >= period_start,
+                    Sale.sale_date < period_end,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        sale_ids = [sale.id for sale in sales]
+        sale_items = (
+            db.execute(
+                select(SaleItem).where(SaleItem.sale_id.in_(sale_ids))
+            )
+            .scalars()
+            .all()
+            if sale_ids
+            else []
+        )
+        returns = (
+            db.execute(
+                select(SaleReturn).where(
+                    SaleReturn.business_id == business_id,
+                    SaleReturn.status == "completed",
+                    SaleReturn.created_at >= period_start,
+                    SaleReturn.created_at < period_end,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return_ids = [sale_return.id for sale_return in returns]
+        return_items = (
+            db.execute(
+                select(SaleReturnItem).where(
+                    SaleReturnItem.return_id.in_(return_ids)
+                )
+            )
+            .scalars()
+            .all()
+            if return_ids
+            else []
+        )
+        product_quantities: dict = {}
+        for item in sale_items:
+            product_id = item.product_id
+            product_quantities[product_id] = product_quantities.get(
+                product_id, Decimal("0")
+            ) + Decimal(item.quantity)
+        for item in return_items:
+            product_id = item.product_id
+            product_quantities[product_id] = product_quantities.get(
+                product_id, Decimal("0")
+            ) - Decimal(item.quantity)
+        product_names = {}
+        if product_quantities:
+            products = db.execute(
+                select(Product.id, Product.name).where(
+                    Product.id.in_(product_quantities.keys())
+                )
+            ).all()
+            product_names = {product_id: name for product_id, name in products}
+        top_product_id, top_product_quantity = max(
+            product_quantities.items(),
+            key=lambda item: item[1],
+            default=(None, Decimal("0")),
+        )
+        gross_sales = sum(
+            (Decimal(sale.total_amount) for sale in sales), Decimal("0")
+        )
+        refund_amount = sum(
+            (Decimal(sale_return.refund_amount) for sale_return in returns),
+            Decimal("0"),
+        )
+        gross_profit = sum(
+            (
+                Decimal(item.line_total)
+                - Decimal(item.unit_cost) * Decimal(item.quantity)
+                for item in sale_items
+            ),
+            Decimal("0"),
+        ) - sum(
+            (
+                Decimal(item.refund_amount)
+                - Decimal(item.unit_cost) * Decimal(item.quantity)
+                for item in return_items
+            ),
+            Decimal("0"),
+        )
+        return {
+            "gross_sales": gross_sales,
+            "net_sales": gross_sales - refund_amount,
+            "gross_profit": gross_profit,
+            "sales_count": len(sales),
+            "items_sold": sum(
+                (Decimal(item.quantity) for item in sale_items), Decimal("0")
+            ) - sum(
+                (Decimal(item.quantity) for item in return_items), Decimal("0")
+            ),
+            "return_count": len(returns),
+            "refund_amount": refund_amount,
+            "top_product_name": (
+                product_names.get(top_product_id)
+                if top_product_id and top_product_quantity > 0
+                else None
+            ),
+            "top_product_quantity": max(top_product_quantity, Decimal("0")),
+        }
+
+    @staticmethod
+    def _daily_business_recap(
+        business: Business, target_date: date, db: Session
+    ) -> DailyBusinessRecap:
+        day_start, day_end = BriefingService._period(business, target_date)
+        previous_start, _ = BriefingService._period(
+            business, target_date - timedelta(days=1)
+        )
+        sales = BriefingService._sales_activity(
+            str(business.id), day_start, day_end, db
+        )
+        previous_sales = BriefingService._sales_activity(
+            str(business.id), previous_start, day_start, db
+        )
+        prior_net_sales = previous_sales["net_sales"]
+        sales_change_percent = None
+        if prior_net_sales:
+            sales_change_percent = (
+                (sales["net_sales"] - prior_net_sales)
+                / abs(prior_net_sales)
+                * Decimal("100")
+            )
+        received_purchases = (
+            db.execute(
+                select(Purchase).where(
+                    Purchase.business_id == business.id,
+                    Purchase.status == "received",
+                    Purchase.received_at >= day_start,
+                    Purchase.received_at < day_end,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        adjustments = (
+            db.execute(
+                select(StockMovement).where(
+                    StockMovement.business_id == business.id,
+                    StockMovement.movement_type.in_(
+                        BriefingService.ADJUSTMENT_MOVEMENT_TYPES
+                    ),
+                    StockMovement.created_at >= day_start,
+                    StockMovement.created_at < day_end,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return DailyBusinessRecap(
+            date=target_date,
+            gross_sales=sales["gross_sales"],
+            net_sales=sales["net_sales"],
+            gross_profit=sales["gross_profit"],
+            sales_count=sales["sales_count"],
+            items_sold=sales["items_sold"],
+            return_count=sales["return_count"],
+            refund_amount=sales["refund_amount"],
+            received_purchase_count=len(received_purchases),
+            received_purchase_value=sum(
+                (
+                    Decimal(purchase.total_amount)
+                    for purchase in received_purchases
+                ),
+                Decimal("0"),
+            ),
+            adjustment_count=len(adjustments),
+            adjustment_quantity=sum(
+                (Decimal(movement.quantity) for movement in adjustments),
+                Decimal("0"),
+            ),
+            sales_change_percent=sales_change_percent,
+            top_product_name=sales["top_product_name"],
+            top_product_quantity=sales["top_product_quantity"],
+        )
+
+    @staticmethod
+    def _recap_context(recap: DailyBusinessRecap) -> dict:
+        return {
+            "report_date": recap.date,
+            "gross_sales": recap.gross_sales,
+            "net_sales": recap.net_sales,
+            "gross_profit": recap.gross_profit,
+            "sales_count": recap.sales_count,
+            "items_sold": recap.items_sold,
+            "return_count": recap.return_count,
+            "refund_amount": recap.refund_amount,
+            "received_purchase_count": recap.received_purchase_count,
+            "received_purchase_value": recap.received_purchase_value,
+            "adjustment_count": recap.adjustment_count,
+            "adjustment_quantity": recap.adjustment_quantity,
+            "sales_change_percent": recap.sales_change_percent,
+            "top_product_name": recap.top_product_name,
+            "top_product_quantity": recap.top_product_quantity,
+        }
 
     @staticmethod
     def _collect_metrics(
@@ -507,6 +863,7 @@ class BriefingService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Business not found",
             )
+        currency_code = (business.currency_code or "PHP").upper()
         today = datetime.now(ZoneInfo(business.timezone)).date()
         existing = db.execute(
             select(InventoryBriefing).where(
@@ -514,14 +871,22 @@ class BriefingService:
                 InventoryBriefing.briefing_date == today,
             )
         ).scalar_one_or_none()
-        if existing and not force:
+        if (
+            existing
+            and not force
+            and existing.metrics_version == BriefingService.METRICS_VERSION
+        ):
             return BriefingService.format(existing)
         if existing:
             db.delete(existing)
             db.flush()
+        target_date = today - timedelta(days=1)
+        daily_recap = BriefingService._daily_business_recap(
+            business, target_date, db
+        )
         recommendations = BriefingService._recommend(
             BriefingService._collect_metrics(
-                business, today - timedelta(days=1), db
+                business, target_date, db
             ),
             business,
             today,
@@ -529,9 +894,9 @@ class BriefingService:
         )
         template = TemplateNarrator()
         narrator = (
-            GeminiNarrator()
-            if settings.NARRATOR_PROVIDER == "gemini"
-            and settings.GEMINI_API_KEY
+            GroqNarrator()
+            if settings.NARRATOR_PROVIDER == "groq"
+            and settings.GROQ_API_KEY
             else template
         )
         provider, model, error_message = narrator.provider, narrator.model, None
@@ -539,15 +904,34 @@ class BriefingService:
             dashboard_context = DashboardService.get_dashboard(
                 business_id, db
             )
-            if isinstance(narrator, GeminiNarrator):
+            if isinstance(narrator, GroqNarrator):
                 narration = await narrator.generate(
-                    recommendations, dashboard_context
+                    recommendations,
+                    dashboard_context,
+                    {
+                        "currency_code": currency_code,
+                        "currency_symbol": BriefingService._currency_symbol(
+                            currency_code
+                        ),
+                    },
+                    BriefingService._recap_context(daily_recap),
                 )
             else:
-                narration = await narrator.generate(recommendations)
+                narration = await narrator.generate(
+                    recommendations,
+                    daily_recap,
+                    BriefingService._currency_symbol(currency_code),
+                )
+            narration = BriefingService._localize_narration(
+                narration, currency_code
+            )
         except Exception as exc:
             provider, model, error_message = "template", None, str(exc)[:1000]
-            narration = await template.generate(recommendations)
+            narration = await template.generate(
+                recommendations,
+                daily_recap,
+                BriefingService._currency_symbol(currency_code),
+            )
         briefing = InventoryBriefing(
             business_id=business.id,
             briefing_date=today,
@@ -600,7 +984,12 @@ class BriefingService:
                 InventoryBriefing.briefing_date == today,
             )
         ).scalar_one_or_none()
-        return BriefingService.format(briefing) if briefing else None
+        if (
+            not briefing
+            or briefing.metrics_version != BriefingService.METRICS_VERSION
+        ):
+            return None
+        return BriefingService.format(briefing)
 
     @staticmethod
     def format(briefing: InventoryBriefing) -> dict:

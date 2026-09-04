@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -5,9 +6,11 @@ import pytest
 
 from app.services.briefing import (
     BriefingService,
+    DailyBusinessRecap,
     ProductMetrics,
     TemplateNarrator,
 )
+from app.schemas.briefing import BriefingNarration
 
 
 def metric(**overrides):
@@ -85,3 +88,52 @@ def test_sales_change_rule_uses_precalculated_percentage():
 async def test_template_narrator_always_returns_three_sentences():
     narration = await TemplateNarrator().generate([])
     assert len(narration.summary) == 3
+
+
+@pytest.mark.asyncio
+async def test_template_narrator_leads_with_daily_business_recap():
+    recap = DailyBusinessRecap(
+        date=date(2026, 9, 2),
+        gross_sales=Decimal("1000"),
+        net_sales=Decimal("900"),
+        gross_profit=Decimal("400"),
+        sales_count=4,
+        items_sold=Decimal("8"),
+        return_count=1,
+        refund_amount=Decimal("100"),
+        received_purchase_count=0,
+        received_purchase_value=Decimal("0"),
+        adjustment_count=0,
+        adjustment_quantity=Decimal("0"),
+        sales_change_percent=Decimal("12.5"),
+        top_product_name="Wireless Earbuds",
+        top_product_quantity=Decimal("5"),
+    )
+
+    narration = await TemplateNarrator().generate(
+        [{"recommended_action": "Review replenishment needs"}],
+        recap,
+        "₱",
+    )
+
+    assert narration.headline == "Sep 02: ₱900.00 in net sales"
+    assert "up 12.5%" in narration.summary[0]
+    assert "Wireless Earbuds" in narration.summary[1]
+    assert "inventory item(s) need attention" in narration.summary[2]
+
+
+def test_narration_uses_business_currency_symbol():
+    narration = BriefingService._localize_narration(
+        BriefingNarration(
+            headline="Revenue is $6,982",
+            summary=[
+                "Inventory is worth $10,000.",
+                "Gross profit is $4,000.",
+                "Review the $500 purchase first.",
+            ],
+        ),
+        "PHP",
+    )
+
+    assert narration.headline == "Revenue is ₱6,982"
+    assert all("$" not in line for line in narration.summary)

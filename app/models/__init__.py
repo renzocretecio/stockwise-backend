@@ -9,6 +9,7 @@ from app.models.inventory import StockBalance, StockMovement, InventoryCount, In
 from app.models.audit import AuditLog
 from app.models.category import Category
 from app.models.briefing import InventoryBriefing, InventoryRecommendation
+from app.models.notification import WeeklyOwnerSummarySettings
 
 __all__ = [
     "Base",
@@ -33,4 +34,5 @@ __all__ = [
     "Category",
     "InventoryBriefing",
     "InventoryRecommendation",
+    "WeeklyOwnerSummarySettings",
 ]

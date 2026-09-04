@@ -1,5 +1,6 @@
 import pytest
 from fastapi import HTTPException
+from types import SimpleNamespace
 
 from app.services.intelligence import IntelligenceService
 
@@ -20,7 +21,7 @@ def test_questions_are_routed_to_approved_intents(question, intent):
     assert IntelligenceService.classify(question) == intent
 
 
-def test_unsupported_question_is_rejected_before_gemini():
+def test_unsupported_question_is_rejected_before_llm():
     with pytest.raises(HTTPException) as error:
         IntelligenceService.classify("Write me a poem")
     assert error.value.status_code == 422
@@ -40,3 +41,28 @@ def test_reorder_fallback_uses_precalculated_quantity():
     )
     assert "78 units" in message.answer
     assert "Wireless Earbuds" in message.answer
+
+
+def test_business_currency_is_added_to_intelligence_context():
+    business = SimpleNamespace(
+        currency_code="PHP",
+        timezone="Asia/Manila",
+    )
+    result = SimpleNamespace(
+        scalar_one_or_none=lambda: business,
+    )
+    database = SimpleNamespace(execute=lambda statement: result)
+
+    context = IntelligenceService.with_business_context(
+        "business-id",
+        {"total_revenue": 6982},
+        database,
+    )
+
+    assert context == {
+        "total_revenue": 6982,
+        "business": {
+            "currency_code": "PHP",
+            "timezone": "Asia/Manila",
+        },
+    }

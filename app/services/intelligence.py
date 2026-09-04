@@ -1,15 +1,20 @@
+import logging
 from typing import Callable
 
 from fastapi import HTTPException, status
-from sqlmodel import Session
+from sqlmodel import Session, select
 
+from app.models.business import Business
 from app.schemas.intelligence import IntelligenceMessage
 from app.services.communication import (
-    GeminiCommunicationService,
+    GroqCommunicationService,
     communication_enabled,
 )
 from app.services.dashboard import DashboardService
 from app.services.report import ReportService
+
+
+logger = logging.getLogger(__name__)
 
 
 class IntelligenceService:
@@ -88,6 +93,28 @@ class IntelligenceService:
         return {}
 
     @staticmethod
+    def with_business_context(
+        business_id: str,
+        context: dict,
+        db: Session,
+    ) -> dict:
+        business = db.execute(
+            select(Business).where(Business.id == business_id)
+        ).scalar_one_or_none()
+        if not business:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Business not found",
+            )
+        return {
+            **context,
+            "business": {
+                "currency_code": business.currency_code,
+                "timezone": business.timezone,
+            },
+        }
+
+    @staticmethod
     def fallback(intent: str, context: dict) -> IntelligenceMessage:
         if intent == "reorder_products":
             forecasts = context.get("forecasts", [])
@@ -124,7 +151,7 @@ class IntelligenceService:
         return IntelligenceMessage(
             answer="The requested analytics are available in the attached facts.",
             facts=["Review the structured context for exact values."],
-            limitations=["Gemini narration is unavailable; no facts were inferred."],
+            limitations=["AI narration is unavailable; no facts were inferred."],
         )
 
     @staticmethod
@@ -133,11 +160,11 @@ class IntelligenceService:
     ) -> tuple[str, str | None, IntelligenceMessage]:
         if communication_enabled():
             try:
-                communicator = GeminiCommunicationService()
+                communicator = GroqCommunicationService()
                 message = await communicator.explain(task, context)
-                return "gemini", communicator.model, message
+                return "groq", communicator.model, message
             except Exception:
-                pass
+                logger.warning("Groq narration failed; using template", exc_info=True)
         return "template", None, IntelligenceService.fallback(intent, context)
 
     @staticmethod
@@ -147,6 +174,11 @@ class IntelligenceService:
         intent = IntelligenceService.classify(question)
         context = IntelligenceService.context_for_intent(
             business_id, intent, db
+        )
+        context = IntelligenceService.with_business_context(
+            business_id,
+            context,
+            db,
         )
         provider, model, message = await IntelligenceService.communicate(
             intent,
@@ -183,6 +215,11 @@ class IntelligenceService:
                 if key != "series"
             }
         }
+        context = IntelligenceService.with_business_context(
+            business_id,
+            context,
+            db,
+        )
         provider, model, message = await IntelligenceService.communicate(
             "reorder_products",
             context,
@@ -211,7 +248,11 @@ class IntelligenceService:
         )
         if not anomaly:
             raise HTTPException(404, "Inventory anomaly not found")
-        context = {"anomaly": anomaly}
+        context = IntelligenceService.with_business_context(
+            business_id,
+            {"anomaly": anomaly},
+            db,
+        )
         provider, model, message = await IntelligenceService.communicate(
             "inventory_anomalies",
             context,
@@ -249,6 +290,11 @@ class IntelligenceService:
             "period": period,
             "analytics": builders[report](),
         }
+        context = IntelligenceService.with_business_context(
+            business_id,
+            context,
+            db,
+        )
         intent = "profitability" if report == "profit" else "sales_performance"
         provider, model, message = await IntelligenceService.communicate(
             intent,

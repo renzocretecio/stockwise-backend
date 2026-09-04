@@ -1,6 +1,6 @@
 from decimal import Decimal
 from sqlmodel import Session, select
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException, status
 from datetime import datetime, timezone
@@ -133,6 +133,7 @@ class PurchaseService:
                 business_id=business_id,
                 supplier_id=payload.supplier_id,
                 reference_number=payload.reference_number,
+                expected_delivery_date=payload.expected_delivery_date,
                 status=PurchaseStatus.DRAFT.value,
                 subtotal=subtotal,
                 tax_amount=payload.tax_amount,
@@ -216,11 +217,14 @@ class PurchaseService:
         page_size: int = 20,
         status_filter: str | None = None,
         supplier_id: str | None = None,
+        search: str | None = None,
     ) -> dict:
         """Get paginated purchases for a business."""
 
-        query = select(Purchase).where(
-            Purchase.business_id == business_id
+        query = (
+            select(Purchase)
+            .outerjoin(Supplier, Purchase.supplier_id == Supplier.id)
+            .where(Purchase.business_id == business_id)
         )
 
         if status_filter:
@@ -231,6 +235,15 @@ class PurchaseService:
         if supplier_id:
             query = query.where(
                 Purchase.supplier_id == supplier_id
+            )
+
+        if search and search.strip():
+            search_term = f"%{search.strip()}%"
+            query = query.where(
+                or_(
+                    Purchase.reference_number.ilike(search_term),
+                    Supplier.name.ilike(search_term),
+                )
             )
 
         count_query = select(
@@ -299,6 +312,9 @@ class PurchaseService:
                 "supplier_name": supplier.name if supplier else "Unknown",
                 "reference_number": purchase.reference_number,
                 "status": purchase.status,
+                "expected_delivery_date": (
+                    purchase.expected_delivery_date
+                ),
                 "total_amount": float(purchase.total_amount),
                 "item_count": len(formatted_items),
                 "items": formatted_items,
@@ -617,6 +633,7 @@ class PurchaseService:
             "supplier_name": supplier.name if supplier else "Unknown",
             "reference_number": purchase.reference_number,
             "status": purchase.status,
+            "expected_delivery_date": purchase.expected_delivery_date,
             "items": items,
             "subtotal": float(purchase.subtotal),
             "tax_amount": float(purchase.tax_amount),

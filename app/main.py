@@ -21,6 +21,7 @@ from app.routes import (
     briefings,
     dashboard,
     intelligence,
+    notifications,
 )
 
 Base.metadata.create_all(bind=engine)
@@ -59,6 +60,10 @@ app.include_router(
     intelligence.router,
     prefix=settings.API_V1_STR,
     tags=["intelligence"],
+)
+app.include_router(
+    notifications.router,
+    prefix=settings.API_V1_STR,
 )
 
 @app.get("/health")

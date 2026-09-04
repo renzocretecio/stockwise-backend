@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from decimal import Decimal
 from enum import Enum
-from datetime import datetime
+from datetime import date, datetime
 
 
 class PurchaseStatus(str, Enum):
@@ -36,6 +36,7 @@ class PurchaseCreate(BaseModel):
     """Schema for creating a new purchase draft"""
     supplier_id: str
     reference_number: Optional[str] = Field(None, max_length=100)
+    expected_delivery_date: Optional[date] = None
     items: list[PurchaseItemCreate] = Field(..., min_length=1)
     tax_amount: Decimal = Field(default=Decimal("0"), ge=0)
     discount_amount: Decimal = Field(default=Decimal("0"), ge=0)
@@ -69,6 +70,7 @@ class PurchaseUpdate(BaseModel):
     """Schema for updating a draft purchase (before receiving)"""
     supplier_id: Optional[str] = None
     reference_number: Optional[str] = Field(None, max_length=100)
+    expected_delivery_date: Optional[date] = None
     items: Optional[list[PurchaseItemCreate]] = Field(None, min_length=1)
     tax_amount: Optional[Decimal] = Field(None, ge=0)
     discount_amount: Optional[Decimal] = Field(None, ge=0)
@@ -100,6 +102,7 @@ class PurchaseResponse(BaseModel):
     supplier_name: str
     reference_number: Optional[str] = None
     status: str
+    expected_delivery_date: Optional[date] = None
     items: list[PurchaseItemResponse]
     subtotal: float
     tax_amount: float
@@ -134,6 +137,7 @@ class PurchaseListItem(BaseModel):
     supplier_name: str
     reference_number: Optional[str] = None
     status: str
+    expected_delivery_date: Optional[date] = None
     total_amount: float
     item_count: int
     items: list[PurchaseListItemProduct]

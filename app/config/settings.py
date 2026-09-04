@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from typing import Optional
 from pydantic_settings import BaseSettings
 
@@ -22,12 +22,22 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_DAYS: int = 7
     
     # LLM
-    CLAUDE_API_KEY: Optional[str] = None
-    MODEL_NAME: str = "claude-3-5-haiku-20241022"
     NARRATOR_PROVIDER: str = "template"
-    GEMINI_API_KEY: Optional[str] = None
-    GEMINI_MODEL: str = "gemini-3.6-flash"
+    GROQ_API_KEY: Optional[str] = None
+    GROQ_MODEL: str = "openai/gpt-oss-20b"
     NARRATOR_TIMEOUT_SECONDS: float = 60.0
+
+    # Weekly owner email
+    APP_URL: str = "http://localhost:3000"
+    SMTP_HOST: Optional[str] = None
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: Optional[str] = None
+    SMTP_PASSWORD: Optional[str] = None
+    SMTP_FROM_EMAIL: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("SMTP_FROM_EMAIL", "SMTP_FROM"),
+    )
+    SMTP_USE_TLS: bool = True
     
     # Redis
     REDIS_URL: str = "redis://localhost:6379"

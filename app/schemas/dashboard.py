@@ -13,6 +13,76 @@ class DashboardKpis(BaseModel):
     out_of_stock_count: int
 
 
+class InventoryRiskSummary(BaseModel):
+    stock_days_threshold: int
+    out_of_stock_skus: int
+    low_stock_skus: int
+    below_reorder_point: int
+    below_days_of_stock: int
+    pending_reorder_recommendations: int
+    expected_deliveries_today: int
+    late_purchase_orders: int
+    estimated_sales_at_risk: float
+
+
+class InventoryAgingBucket(BaseModel):
+    key: Literal["active", "slowing", "at_risk", "dead_stock"]
+    sku_count: int
+    inventory_value: float
+
+
+class InventoryEfficiencyAction(BaseModel):
+    product_id: str
+    product_name: str
+    sku: Optional[str] = None
+    classification: Literal[
+        "active", "slowing", "at_risk", "dead_stock"
+    ]
+    current_stock: float
+    inventory_value: float
+    last_sale_date: Optional[date] = None
+    days_without_sale: int
+    excess_units: float
+    excess_value: float
+    is_perishable: bool
+    suggested_action: str
+
+
+class InventoryEfficiencySummary(BaseModel):
+    dead_stock_value: float
+    dead_stock_percentage: float
+    slow_moving_skus: int
+    perishable_skus: int
+    overstocked_products: int
+    capital_tied_up: float
+    aging_buckets: list[InventoryAgingBucket]
+    actions: list[InventoryEfficiencyAction]
+
+
+class DashboardTrendPoint(BaseModel):
+    date: date
+    revenue: float
+    gross_profit: float
+    items_sold: float
+    order_count: int
+    inventory_value: float
+    stockout_count: int
+    dead_stock_value: float
+    inventory_turnover: float
+    purchase_receipts: float
+    adjustments: float
+    discrepancies: float
+
+
+class DashboardTrendsResponse(BaseModel):
+    success: bool = True
+    start_date: date
+    end_date: date
+    granularity: Literal["day", "week", "month"]
+    inventory_valuation_method: str
+    points: list[DashboardTrendPoint]
+
+
 class ForecastPoint(BaseModel):
     date: date
     actual: Optional[float] = None
@@ -28,6 +98,8 @@ class DemandForecastItem(BaseModel):
     current_stock: float
     incoming_stock: float
     safety_stock: float
+    estimated_unit_cost: float
+    estimated_order_cost: float
     lead_time_days: int
     average_daily_sales_7d: float
     average_daily_sales_30d: float
@@ -69,5 +141,7 @@ class DashboardResponse(BaseModel):
     success: bool = True
     as_of: date
     kpis: DashboardKpis
+    inventory_risk: InventoryRiskSummary
+    inventory_efficiency: InventoryEfficiencySummary
     forecasts: list[DemandForecastItem]
     anomalies: list[InventoryAnomaly]

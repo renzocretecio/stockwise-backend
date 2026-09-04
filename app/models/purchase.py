@@ -12,6 +12,7 @@ class Purchase(Base):
     reference_number = Column(String(100))
     status = Column(String(30), default='draft', nullable=False)
     purchase_date = Column(Date, server_default=func.current_date(), nullable=False)
+    expected_delivery_date = Column(Date, index=True)
     ordered_at = Column(DateTime(timezone=True))
     received_at = Column(DateTime(timezone=True))
     subtotal = Column(Numeric(14, 2), default=0, nullable=False)

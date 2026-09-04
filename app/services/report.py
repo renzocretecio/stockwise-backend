@@ -1,31 +1,342 @@
 from decimal import Decimal
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 from sqlmodel import Session, select
 from sqlalchemy import func
 
 from app.models.product import Product, Supplier
-from app.models.sale import Sale, SaleItem
+from app.models.sale import Sale, SaleItem, SaleReturn, SaleReturnItem
 from app.models.purchase import Purchase, PurchaseItem
-from app.models.inventory import StockBalance, StockMovement
+from app.models.inventory import (
+    InventoryCount,
+    InventoryCountItem,
+    StockBalance,
+    StockMovement,
+)
 from app.schemas.sale import SaleStatus
 from app.schemas.purchase import PurchaseStatus
 
 
 class ReportService:
     # ========================================================================
+    # OPERATIONAL METRICS
+    # ========================================================================
+
+    @staticmethod
+    def get_operational_metrics(
+        *,
+        business_id: str,
+        db: Session,
+        start_date: date,
+        end_date: date,
+        timezone_name: str,
+    ) -> dict:
+        """Calculate auditable operational metrics for a calendar range."""
+        try:
+            zone = ZoneInfo(timezone_name)
+        except Exception:
+            zone = ZoneInfo("UTC")
+        range_start = datetime.combine(
+            start_date,
+            time.min,
+            tzinfo=zone,
+        ).astimezone(timezone.utc)
+        range_end = datetime.combine(
+            end_date + timedelta(days=1),
+            time.min,
+            tzinfo=zone,
+        ).astimezone(timezone.utc)
+        period_days = (end_date - start_date).days + 1
+
+        count_rows = db.execute(
+            select(
+                InventoryCountItem.expected_quantity,
+                InventoryCountItem.counted_quantity,
+            )
+            .join(
+                InventoryCount,
+                InventoryCount.id
+                == InventoryCountItem.inventory_count_id,
+            )
+            .where(
+                InventoryCount.business_id == business_id,
+                InventoryCount.status == "finalized",
+                InventoryCount.finalized_at >= range_start,
+                InventoryCount.finalized_at < range_end,
+                InventoryCountItem.counted_quantity.is_not(None),
+            )
+        ).all()
+        counted_items = len(count_rows)
+        accurate_items = sum(
+            1
+            for expected, counted in count_rows
+            if Decimal(expected) == Decimal(counted)
+        )
+
+        balances = db.execute(
+            select(StockBalance).where(
+                StockBalance.business_id == business_id
+            )
+        ).scalars().all()
+        inventory_value = sum(
+            (
+                max(Decimal("0"), Decimal(balance.quantity))
+                * Decimal(balance.average_cost)
+                for balance in balances
+            ),
+            Decimal("0"),
+        )
+        average_cost_by_product = {
+            balance.product_id: Decimal(balance.average_cost)
+            for balance in balances
+        }
+
+        sale_cogs = db.execute(
+            select(
+                SaleItem.product_id,
+                SaleItem.quantity,
+                SaleItem.unit_cost,
+            )
+            .join(Sale, Sale.id == SaleItem.sale_id)
+            .where(
+                Sale.business_id == business_id,
+                Sale.status.in_({
+                    SaleStatus.COMPLETED.value,
+                    SaleStatus.PARTIALLY_RETURNED.value,
+                    SaleStatus.RETURNED.value,
+                }),
+                Sale.sale_date >= range_start,
+                Sale.sale_date < range_end,
+            )
+        ).all()
+        return_cogs = db.execute(
+            select(
+                SaleReturnItem.product_id,
+                SaleReturnItem.quantity,
+                SaleReturnItem.unit_cost,
+            )
+            .join(
+                SaleReturn,
+                SaleReturn.id == SaleReturnItem.return_id,
+            )
+            .where(
+                SaleReturn.business_id == business_id,
+                SaleReturn.status == "completed",
+                SaleReturn.created_at >= range_start,
+                SaleReturn.created_at < range_end,
+            )
+        ).all()
+        sold_cost = sum(
+            (
+                Decimal(quantity) * Decimal(unit_cost)
+                for _, quantity, unit_cost in sale_cogs
+            ),
+            Decimal("0"),
+        )
+        returned_cost = sum(
+            (
+                Decimal(quantity) * Decimal(unit_cost)
+                for _, quantity, unit_cost in return_cogs
+            ),
+            Decimal("0"),
+        )
+        period_cogs = max(Decimal("0"), sold_cost - returned_cost)
+
+        movement_rows = db.execute(
+            select(StockMovement).where(
+                StockMovement.business_id == business_id,
+                StockMovement.quantity < 0,
+                StockMovement.created_at >= range_start,
+                StockMovement.created_at < range_end,
+            )
+        ).scalars().all()
+        shrinkage_reasons = {
+            "damage",
+            "expiry",
+            "physical_count",
+            "shrinkage",
+        }
+        shrinkage_movements = [
+            movement
+            for movement in movement_rows
+            if movement.movement_type in {"damage", "expired"}
+            or (
+                movement.movement_type == "adjustment"
+                and movement.reason in shrinkage_reasons
+            )
+        ]
+        shrinkage_units = sum(
+            (abs(Decimal(item.quantity)) for item in shrinkage_movements),
+            Decimal("0"),
+        )
+        shrinkage_value = sum(
+            (
+                abs(Decimal(item.quantity))
+                * (
+                    Decimal(item.unit_cost)
+                    if item.unit_cost is not None
+                    else average_cost_by_product.get(
+                        item.product_id,
+                        Decimal("0"),
+                    )
+                )
+                for item in shrinkage_movements
+            ),
+            Decimal("0"),
+        )
+
+        purchases = db.execute(
+            select(Purchase).where(
+                Purchase.business_id == business_id,
+                Purchase.ordered_at >= range_start,
+                Purchase.ordered_at < range_end,
+                Purchase.status.in_({
+                    PurchaseStatus.ORDERED.value,
+                    PurchaseStatus.RECEIVED.value,
+                }),
+            )
+        ).scalars().all()
+        ordered_purchases = len(purchases)
+        received_purchases = sum(
+            1
+            for purchase in purchases
+            if purchase.status == PurchaseStatus.RECEIVED.value
+            and purchase.received_at is not None
+            and purchase.received_at < range_end
+        )
+
+        return ReportService._build_operational_metrics(
+            period_days=period_days,
+            counted_items=counted_items,
+            accurate_items=accurate_items,
+            inventory_value=inventory_value,
+            period_cogs=period_cogs,
+            shrinkage_units=shrinkage_units,
+            shrinkage_value=shrinkage_value,
+            ordered_purchases=ordered_purchases,
+            received_purchases=received_purchases,
+        )
+
+    @staticmethod
+    def _build_operational_metrics(
+        *,
+        period_days: int,
+        counted_items: int,
+        accurate_items: int,
+        inventory_value: Decimal,
+        period_cogs: Decimal,
+        shrinkage_units: Decimal,
+        shrinkage_value: Decimal,
+        ordered_purchases: int,
+        received_purchases: int,
+    ) -> dict:
+        stock_accuracy = (
+            Decimal(accurate_items) / Decimal(counted_items) * 100
+            if counted_items
+            else None
+        )
+        daily_cogs = period_cogs / Decimal(period_days)
+        inventory_days = (
+            inventory_value / daily_cogs
+            if daily_cogs > 0
+            else None
+        )
+        shrinkage_rate = (
+            shrinkage_value / inventory_value * 100
+            if inventory_value > 0
+            else None
+        )
+        receipt_rate = (
+            Decimal(received_purchases)
+            / Decimal(ordered_purchases)
+            * 100
+            if ordered_purchases
+            else None
+        )
+
+        return {
+            "period_days": period_days,
+            "stock_accuracy_rate": (
+                float(round(stock_accuracy, 1))
+                if stock_accuracy is not None
+                else None
+            ),
+            "counted_items": counted_items,
+            "accurate_items": accurate_items,
+            "inventory_days": (
+                float(round(inventory_days, 1))
+                if inventory_days is not None
+                else None
+            ),
+            "inventory_value": float(inventory_value),
+            "period_cogs": float(period_cogs),
+            "shrinkage_rate": (
+                float(round(shrinkage_rate, 2))
+                if shrinkage_rate is not None
+                else None
+            ),
+            "shrinkage_units": float(shrinkage_units),
+            "shrinkage_value": float(shrinkage_value),
+            "receipt_completion_rate": (
+                float(round(receipt_rate, 1))
+                if receipt_rate is not None
+                else None
+            ),
+            "ordered_purchases": ordered_purchases,
+            "received_purchases": received_purchases,
+        }
+
+    # ========================================================================
     # SALES REPORT
     # ========================================================================
 
     @staticmethod
-    def get_sales_report(business_id: str, days: int, db: Session) -> dict:
-        """Sales report for the last N days"""
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    def get_sales_report(
+        business_id: str,
+        days: int,
+        db: Session,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        timezone_name: str = "UTC",
+    ) -> dict:
+        """Return-aware sales report for a period or explicit date range."""
+        range_end = None
+        period_days = days
+
+        if start_date is not None and end_date is not None:
+            try:
+                zone = ZoneInfo(timezone_name)
+            except Exception:
+                zone = ZoneInfo("UTC")
+            cutoff = datetime.combine(
+                start_date,
+                time.min,
+                tzinfo=zone,
+            ).astimezone(timezone.utc)
+            range_end = datetime.combine(
+                end_date + timedelta(days=1),
+                time.min,
+                tzinfo=zone,
+            ).astimezone(timezone.utc)
+            period_days = (end_date - start_date).days + 1
+        else:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+        sale_filters = [
+            Sale.business_id == business_id,
+            Sale.sale_date >= cutoff,
+        ]
+        return_filters = [
+            SaleReturn.business_id == business_id,
+            SaleReturn.status == "completed",
+            SaleReturn.created_at >= cutoff,
+        ]
+        if range_end is not None:
+            sale_filters.append(Sale.sale_date < range_end)
+            return_filters.append(SaleReturn.created_at < range_end)
 
         sales = db.execute(
-            select(Sale).where(
-                Sale.business_id == business_id,
-                Sale.created_at >= cutoff,
-            )
+            select(Sale).where(*sale_filters)
         ).scalars().all()
 
         reportable_statuses = {
@@ -35,38 +346,310 @@ class ReportService:
         }
         completed_sales = [s for s in sales if s.status in reportable_statuses]
         voided_sales = [s for s in sales if s.status == SaleStatus.VOIDED.value]
-
-        total_revenue = sum((s.total_amount for s in completed_sales), Decimal("0"))
-
-        # Items sold count
         sale_ids = [s.id for s in completed_sales]
-        total_items_sold = Decimal("0")
-        items = []
+        sale_items = []
         if sale_ids:
-            items = db.execute(
+            sale_items = db.execute(
                 select(SaleItem).where(SaleItem.sale_id.in_(sale_ids))
             ).scalars().all()
-            total_items_sold = sum((i.quantity for i in items), Decimal("0"))
-        profit_by_sale: dict[object, Decimal] = {}
-        for item in items:
-            profit_by_sale[item.sale_id] = profit_by_sale.get(
-                item.sale_id, Decimal("0")
-            ) + ((item.unit_price - item.unit_cost) * item.quantity)
-        total_profit = sum(profit_by_sale.values(), Decimal("0"))
 
-        average_sale_value = (
-            total_revenue / len(completed_sales) if completed_sales else Decimal("0")
+        completed_returns = db.execute(
+            select(SaleReturn).where(*return_filters)
+        ).scalars().all()
+        return_ids = [sale_return.id for sale_return in completed_returns]
+        return_items = []
+        if return_ids:
+            return_items = db.execute(
+                select(SaleReturnItem).where(
+                    SaleReturnItem.return_id.in_(return_ids)
+                )
+            ).scalars().all()
+
+        product_ids = {
+            item.product_id for item in [*sale_items, *return_items]
+        }
+        products = []
+        if product_ids:
+            products = db.execute(
+                select(Product).where(Product.id.in_(product_ids))
+            ).scalars().all()
+        product_names = {
+            product.id: product.name for product in products
+        }
+
+        report = ReportService._build_sales_report(
+            days=period_days,
+            completed_sales=completed_sales,
+            voided_sales=voided_sales,
+            sale_items=sale_items,
+            completed_returns=completed_returns,
+            return_items=return_items,
+            product_names=product_names,
+            timezone_name=timezone_name,
         )
 
-        # Group by day
+        products_by_id = {
+            str(product.id): product for product in products
+        }
+        stock_by_product: dict[str, StockBalance] = {}
+        if product_ids:
+            balances = db.execute(
+                select(StockBalance).where(
+                    StockBalance.product_id.in_(product_ids)
+                )
+            ).scalars().all()
+            stock_by_product = {
+                str(balance.product_id): balance for balance in balances
+            }
+
+        ReportService._add_product_velocity(
+            products=report["top_products"],
+            products_by_id=products_by_id,
+            stock_by_product=stock_by_product,
+            period_days=period_days,
+        )
+        report["slow_products"] = ReportService._get_slow_products(
+            business_id=business_id,
+            db=db,
+            timezone_name=timezone_name,
+            reportable_statuses=reportable_statuses,
+        )
+        return report
+
+    @staticmethod
+    def _add_product_velocity(
+        *,
+        products: list[dict],
+        products_by_id: dict[str, Product],
+        stock_by_product: dict[str, StockBalance],
+        period_days: int,
+    ) -> None:
+        """Add deterministic sales velocity and stock coverage fields."""
+        for item in products:
+            product_id = item["product_id"]
+            product = products_by_id.get(product_id)
+            balance = stock_by_product.get(product_id)
+            current_stock = Decimal("0")
+            if balance is not None:
+                current_stock = max(
+                    Decimal("0"),
+                    Decimal(balance.quantity)
+                    - Decimal(balance.reserved_quantity),
+                )
+
+            quantity_sold = Decimal(str(item["quantity_sold"]))
+            units_per_day = quantity_sold / Decimal(period_days)
+            days_remaining = (
+                current_stock / units_per_day
+                if units_per_day > 0
+                else None
+            )
+
+            item.update({
+                "sku": product.sku if product is not None else None,
+                "units_per_day": float(round(units_per_day, 3)),
+                "current_stock": float(current_stock),
+                "days_of_stock_remaining": (
+                    float(round(days_remaining, 1))
+                    if days_remaining is not None
+                    else None
+                ),
+            })
+
+    @staticmethod
+    def _get_slow_products(
+        *,
+        business_id: str,
+        db: Session,
+        timezone_name: str,
+        reportable_statuses: set[str],
+    ) -> list[dict]:
+        """Return stocked products with no completed sale for 30+ days."""
+        rows = db.execute(
+            select(Product, StockBalance)
+            .join(
+                StockBalance,
+                StockBalance.product_id == Product.id,
+            )
+            .where(
+                Product.business_id == business_id,
+                Product.is_active.is_(True),
+            )
+        ).all()
+
+        last_sale_rows = db.execute(
+            select(
+                SaleItem.product_id,
+                func.max(Sale.sale_date),
+            )
+            .join(Sale, Sale.id == SaleItem.sale_id)
+            .where(
+                Sale.business_id == business_id,
+                Sale.status.in_(reportable_statuses),
+            )
+            .group_by(SaleItem.product_id)
+        ).all()
+        last_sale_by_product = dict(last_sale_rows)
+
+        try:
+            zone = ZoneInfo(timezone_name)
+        except Exception:
+            zone = ZoneInfo("UTC")
+        today = datetime.now(zone).date()
+
+        slow_products = []
+        for product, balance in rows:
+            current_stock = Decimal(balance.quantity)
+            current_stock -= Decimal(balance.reserved_quantity)
+            if current_stock <= 0:
+                continue
+
+            last_sale_at = last_sale_by_product.get(product.id)
+            activity_at = last_sale_at or product.created_at
+            if activity_at.tzinfo is None:
+                activity_at = activity_at.replace(tzinfo=timezone.utc)
+            activity_date = activity_at.astimezone(zone).date()
+            days_without_sale = max((today - activity_date).days, 0)
+            if days_without_sale < 30:
+                continue
+
+            if days_without_sale >= 90:
+                classification = "dead_stock"
+            elif days_without_sale >= 60:
+                classification = "very_slow"
+            else:
+                classification = "slow"
+
+            inventory_value = (
+                Decimal(balance.quantity)
+                * Decimal(balance.average_cost)
+            )
+            slow_products.append({
+                "product_id": str(product.id),
+                "product_name": product.name,
+                "sku": product.sku,
+                "current_stock": float(current_stock),
+                "inventory_value": float(inventory_value),
+                "last_sale_date": (
+                    activity_date.isoformat()
+                    if last_sale_at is not None
+                    else None
+                ),
+                "days_without_sale": days_without_sale,
+                "classification": classification,
+            })
+
+        slow_products.sort(
+            key=lambda item: (
+                item["days_without_sale"],
+                item["inventory_value"],
+            ),
+            reverse=True,
+        )
+        return slow_products[:10]
+
+    @staticmethod
+    def _build_sales_report(
+        *,
+        days: int,
+        completed_sales: list,
+        voided_sales: list,
+        sale_items: list,
+        completed_returns: list,
+        return_items: list,
+        product_names: dict,
+        timezone_name: str = "UTC",
+    ) -> dict:
+        """Build net sales metrics from loaded sales and return records."""
+        zero = Decimal("0")
+        total_revenue = sum(
+            (Decimal(sale.total_amount) for sale in completed_sales),
+            zero,
+        )
+        total_revenue -= sum(
+            (
+                Decimal(sale_return.refund_amount)
+                for sale_return in completed_returns
+            ),
+            zero,
+        )
+        total_items_sold = sum(
+            (Decimal(item.quantity) for item in sale_items),
+            zero,
+        )
+        total_items_sold -= sum(
+            (Decimal(item.quantity) for item in return_items),
+            zero,
+        )
+
+        profit_by_sale: dict[object, Decimal] = {}
+        product_metrics: dict[object, dict[str, Decimal]] = {}
+        for item in sale_items:
+            profit = (
+                Decimal(item.unit_price) - Decimal(item.unit_cost)
+            ) * Decimal(item.quantity)
+            profit_by_sale[item.sale_id] = (
+                profit_by_sale.get(item.sale_id, zero) + profit
+            )
+            metrics = product_metrics.setdefault(
+                item.product_id,
+                {"quantity": zero, "revenue": zero, "profit": zero},
+            )
+            metrics["quantity"] += Decimal(item.quantity)
+            metrics["revenue"] += Decimal(item.line_total)
+            metrics["profit"] += profit
+
+        return_profit_by_return: dict[object, Decimal] = {}
+        for item in return_items:
+            refund = Decimal(item.refund_amount)
+            restored_cost = Decimal(item.unit_cost) * Decimal(item.quantity)
+            profit_reversal = refund - restored_cost
+            return_profit_by_return[item.return_id] = (
+                return_profit_by_return.get(item.return_id, zero)
+                + profit_reversal
+            )
+            metrics = product_metrics.setdefault(
+                item.product_id,
+                {"quantity": zero, "revenue": zero, "profit": zero},
+            )
+            metrics["quantity"] -= Decimal(item.quantity)
+            metrics["revenue"] -= refund
+            metrics["profit"] -= profit_reversal
+
+        total_profit = sum(profit_by_sale.values(), zero)
+        total_profit -= sum(return_profit_by_return.values(), zero)
+        average_sale_value = (
+            total_revenue / len(completed_sales)
+            if completed_sales
+            else zero
+        )
+
         by_day_map: dict[str, dict] = {}
+
+        try:
+            report_zone = ZoneInfo(timezone_name)
+        except Exception:
+            report_zone = ZoneInfo("UTC")
+
+        def day_metrics(value: datetime) -> dict:
+            day_key = value.astimezone(report_zone).date().isoformat()
+            return by_day_map.setdefault(
+                day_key,
+                {"revenue": zero, "profit": zero, "count": 0},
+            )
+
         for sale in completed_sales:
-            day_key = sale.created_at.date().isoformat()
-            if day_key not in by_day_map:
-                by_day_map[day_key] = {"revenue": Decimal("0"), "profit": Decimal("0"), "count": 0}
-            by_day_map[day_key]["revenue"] += sale.total_amount
-            by_day_map[day_key]["profit"] += profit_by_sale.get(sale.id, Decimal("0"))
-            by_day_map[day_key]["count"] += 1
+            metrics = day_metrics(sale.sale_date)
+            metrics["revenue"] += Decimal(sale.total_amount)
+            metrics["profit"] += profit_by_sale.get(sale.id, zero)
+            metrics["count"] += 1
+        for sale_return in completed_returns:
+            metrics = day_metrics(sale_return.created_at)
+            metrics["revenue"] -= Decimal(sale_return.refund_amount)
+            metrics["profit"] -= return_profit_by_return.get(
+                sale_return.id,
+                zero,
+            )
 
         by_day = [
             {
@@ -78,45 +661,24 @@ class ReportService:
             for day, data in sorted(by_day_map.items())
         ]
 
-        # Top products
-        top_products = []
-        if sale_ids:
-            rows = db.execute(
-                select(
-                    SaleItem.product_id,
-                    func.sum(SaleItem.quantity).label("qty"),
-                    func.sum(SaleItem.line_total).label("revenue"),
-                )
-                .where(SaleItem.sale_id.in_(sale_ids))
-                .group_by(SaleItem.product_id)
-                .order_by(func.sum(SaleItem.line_total).desc())
-                .limit(10)
-            ).all()
-
-            for product_id, qty, revenue in rows:
-                product = db.execute(
-                    select(Product).where(Product.id == product_id)
-                ).scalar_one_or_none()
-
-                items_for_product = db.execute(
-                    select(SaleItem).where(
-                        SaleItem.sale_id.in_(sale_ids),
-                        SaleItem.product_id == product_id,
-                    )
-                ).scalars().all()
-
-                profit = sum(
-                    ((i.unit_price - i.unit_cost) * i.quantity for i in items_for_product),
-                    Decimal("0"),
-                )
-
-                top_products.append({
-                    "product_id": str(product_id),
-                    "product_name": product.name if product else "Unknown",
-                    "quantity_sold": float(qty),
-                    "revenue": float(revenue),
-                    "profit": float(profit),
-                })
+        top_products = [
+            {
+                "product_id": str(product_id),
+                "product_name": product_names.get(
+                    product_id,
+                    "Unknown",
+                ),
+                "quantity_sold": float(metrics["quantity"]),
+                "revenue": float(metrics["revenue"]),
+                "profit": float(metrics["profit"]),
+            }
+            for product_id, metrics in sorted(
+                product_metrics.items(),
+                key=lambda entry: entry[1]["revenue"],
+                reverse=True,
+            )
+            if metrics["quantity"] > 0 or metrics["revenue"] > 0
+        ][:10]
 
         return {
             "period_days": days,

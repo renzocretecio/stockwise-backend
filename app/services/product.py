@@ -4,7 +4,7 @@ from decimal import Decimal
 from fastapi import HTTPException, status
 from app.schemas.product import ProductCreate
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy import func
+from sqlalchemy import and_, func
 from sqlalchemy.orm import joinedload
 
 class ProductService:
@@ -162,12 +162,18 @@ class ProductService:
         page_size: int = 10,
         search: str | None = None,
         category: str | None = None,
+        stock_status: str | None = None,
     ) -> list:
         """Get all active products for a business"""
-        query = select(Product).where(
-            Product.business_id == business_id,
-            Product.is_active == True
-        ).options(joinedload(Product.category))
+        query = (
+            select(Product)
+            .outerjoin(StockBalance, StockBalance.product_id == Product.id)
+            .where(
+                Product.business_id == business_id,
+                Product.is_active == True,
+            )
+            .options(joinedload(Product.category))
+        )
 
         if search:
             search_term = f"%{search.lower()}%"
@@ -178,7 +184,22 @@ class ProductService:
             )
 
         if category:
-            query = query.where(Product.category == category)
+            query = query.join(Category, Category.id == Product.category_id).where(
+                func.lower(Category.name) == category.strip().lower()
+            )
+
+        available_quantity = func.coalesce(StockBalance.quantity, 0)
+        if stock_status == "out_of_stock":
+            query = query.where(available_quantity <= 0)
+        elif stock_status == "low_stock":
+            query = query.where(
+                and_(
+                    available_quantity > 0,
+                    available_quantity <= Product.reorder_point,
+                )
+            )
+        elif stock_status == "in_stock":
+            query = query.where(available_quantity > Product.reorder_point)
 
         # Get total count (before pagination)
         count_query = select(func.count()).select_from(query.subquery())

@@ -1,3 +1,5 @@
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session
 
@@ -45,6 +47,9 @@ async def list_products(
     page_size: int = Query(default=10, ge=1, le=100, description="Items per page"),
     search: str | None = Query(default=None, description="Search by name, SKU, or barcode"),
     category: str | None = Query(default=None, description="Filter by category"),
+    stock_status: Literal[
+        "in_stock", "low_stock", "out_of_stock"
+    ] | None = Query(default=None, description="Filter by stock status"),
     context: RequestContext = Depends(require_permission("products.read")),
     db: Session = Depends(get_db),
 ):
@@ -56,6 +61,7 @@ async def list_products(
         page_size=page_size,
         search=search,
         category=category,
+        stock_status=stock_status,
     )
 
     total_pages = (total + page_size - 1) // page_size if total > 0 else 0

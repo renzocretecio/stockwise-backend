@@ -14,7 +14,7 @@ class IntelligenceMessage(BaseModel):
 class IntelligenceResponse(BaseModel):
     success: bool = True
     intent: str
-    provider: Literal["gemini", "template"]
+    provider: Literal["groq", "template"]
     model: Optional[str] = None
     message: IntelligenceMessage
     context: dict[str, Any]

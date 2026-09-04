@@ -404,20 +404,32 @@ def add_purchase_item(db, purchase, product, quantity):
 def create_purchases(db, business, user, products, suppliers):
     now = datetime.now(timezone.utc)
     definitions = [
-        ("RECEIVED", "received", "tech", 60, 55),
-        ("OVERDUE", "ordered", "tech", 20, None),
-        ("INCOMING", "ordered", "accessories", 2, None),
-        ("DRAFT", "draft", "local", 0, None),
-        ("CANCELLED", "cancelled", "accessories", 12, None),
+        ("RECEIVED", "received", "tech", 60, 55, None),
+        ("OVERDUE", "ordered", "tech", 20, None, -5),
+        ("INCOMING", "ordered", "accessories", 2, None, 0),
+        ("DRAFT", "draft", "local", 0, None, 7),
+        ("CANCELLED", "cancelled", "accessories", 12, None, None),
     ]
     purchases = {}
-    for label, state, supplier_key, age, received_age in definitions:
+    for (
+        label,
+        state,
+        supplier_key,
+        age,
+        received_age,
+        delivery_offset,
+    ) in definitions:
         purchase = Purchase(
             business_id=business.id,
             supplier_id=suppliers[supplier_key].id,
             reference_number=f"DEMO-PO-{label}",
             status=state,
             purchase_date=(now - timedelta(days=age)).date(),
+            expected_delivery_date=(
+                now + timedelta(days=delivery_offset)
+            ).date()
+            if delivery_offset is not None
+            else None,
             ordered_at=(now - timedelta(days=age))
             if state in ("ordered", "received", "cancelled")
             else None,

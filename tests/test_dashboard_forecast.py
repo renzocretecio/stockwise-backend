@@ -1,10 +1,43 @@
 from decimal import Decimal
 
 from app.services.dashboard import (
+    calculate_sales_at_risk,
     calculate_reorder,
     count_variance_threshold,
     forecast_method_label,
+    inventory_age_bucket,
 )
+
+
+def test_sales_at_risk_uses_lead_time_shortage_not_safety_stock():
+    result = calculate_sales_at_risk(
+        daily_demand=Decimal("5"),
+        lead_time_days=7,
+        available_stock=Decimal("10"),
+        incoming_stock=Decimal("5"),
+        selling_price=Decimal("20"),
+    )
+    assert result == Decimal("400")
+
+
+def test_sales_at_risk_never_returns_a_negative_value():
+    result = calculate_sales_at_risk(
+        daily_demand=Decimal("2"),
+        lead_time_days=5,
+        available_stock=Decimal("20"),
+        incoming_stock=Decimal("0"),
+        selling_price=Decimal("50"),
+    )
+    assert result == 0
+
+
+def test_inventory_age_buckets_do_not_overlap():
+    assert inventory_age_bucket(29) == "active"
+    assert inventory_age_bucket(30) == "slowing"
+    assert inventory_age_bucket(59) == "slowing"
+    assert inventory_age_bucket(60) == "at_risk"
+    assert inventory_age_bucket(89) == "at_risk"
+    assert inventory_age_bucket(90) == "dead_stock"
 
 
 def test_reorder_uses_weighted_velocity_and_subtracts_incoming_stock():
