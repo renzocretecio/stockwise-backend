@@ -2,8 +2,13 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from app.routes.auth import get_user_profile
+from app.routes.auth import change_password
 from app.routes.auth import update_user_profile
-from app.schemas.auth import UserProfileUpdate
+from app.schemas.auth import ChangePasswordRequest, UserProfileUpdate
+from app.services.auth import AuthService
+from app.utils.security import hash_password, verify_password
+from fastapi import HTTPException
+import pytest
 
 
 def test_get_user_profile_includes_permissions():
@@ -91,3 +96,53 @@ def test_update_user_profile_saves_normalized_names():
 
     assert result["user"]["first_name"] == "Updated"
     assert result["user"]["last_name"] == "User"
+
+
+def test_change_password_rejects_incorrect_current_password():
+    user = SimpleNamespace(password_hash=hash_password("old-password"))
+    database = SimpleNamespace()
+
+    with pytest.raises(HTTPException) as error:
+        change_password(
+            ChangePasswordRequest(
+                current_password="wrong-password",
+                new_password="new-password",
+                confirm_password="new-password",
+            ),
+            current_user=user,
+            db=database,
+        )
+
+    assert error.value.status_code == 400
+    assert error.value.detail == "Current password is incorrect"
+
+
+def test_change_password_replaces_hash():
+    user = SimpleNamespace(password_hash=hash_password("old-password"))
+    database = SimpleNamespace(
+        add=lambda value: None,
+        commit=lambda: None,
+    )
+
+    result = change_password(
+        ChangePasswordRequest(
+            current_password="old-password",
+            new_password="new-password",
+            confirm_password="new-password",
+        ),
+        current_user=user,
+        db=database,
+    )
+
+    assert result["success"] is True
+    assert verify_password("new-password", user.password_hash)
+    assert not verify_password("old-password", user.password_hash)
+
+
+def test_change_password_requires_matching_new_passwords():
+    with pytest.raises(ValueError, match="do not match"):
+        ChangePasswordRequest(
+            current_password="old-password",
+            new_password="new-password",
+            confirm_password="different-password",
+        )

@@ -5,6 +5,7 @@ from app.core.security import get_current_user
 from app.models import BusinessMembership, User
 from app.models.permission import Permission, RolePermission
 from app.schemas.auth import (
+    ChangePasswordRequest,
     LoginRequest,
     SignUpWithBusinessRequest,
     UserProfileUpdate,
@@ -170,3 +171,18 @@ def update_user_profile(
             "last_name": current_user.last_name,
         },
     }
+
+
+@router.post("/change-password")
+def change_password(
+    payload: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    AuthService.change_password(
+        current_user,
+        payload.current_password,
+        payload.new_password,
+        db,
+    )
+    return {"success": True, "message": "Password changed successfully"}

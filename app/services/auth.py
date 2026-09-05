@@ -94,6 +94,22 @@ class AuthService:
             "businesses": businesses,
             "access_token": token
         }
+
+    @staticmethod
+    def change_password(
+        user: User,
+        current_password: str,
+        new_password: str,
+        db: Session,
+    ) -> None:
+        if not verify_password(current_password, user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current password is incorrect",
+            )
+        user.password_hash = hash_password(new_password)
+        db.add(user)
+        db.commit()
     
     @staticmethod
     def verify_access_to_business(
