@@ -20,12 +20,22 @@ class Settings(BaseSettings):
     JWT_SECRET: str
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_DAYS: int = 7
+
+    # Google OpenID Connect. StockWise uses Google only for authentication,
+    # so provider access and refresh tokens are never persisted.
+    GOOGLE_CLIENT_ID: Optional[str] = None
+    GOOGLE_CLIENT_SECRET: Optional[str] = None
+    GOOGLE_REDIRECT_URI: Optional[str] = None
+    GOOGLE_OAUTH_TIMEOUT_SECONDS: float = 10.0
     
     # LLM
     NARRATOR_PROVIDER: str = "template"
     GROQ_API_KEY: Optional[str] = None
     GROQ_MODEL: str = "openai/gpt-oss-20b"
     NARRATOR_TIMEOUT_SECONDS: float = 60.0
+
+    # Billing administration. Required only for the internal manual-plan API.
+    BILLING_ADMIN_TOKEN: Optional[str] = None
 
     # Weekly owner email
     APP_URL: str = "http://localhost:3000"

@@ -5,11 +5,20 @@ from app.models.membership import BusinessMembership
 from app.models.product import Product, Supplier
 from app.models.purchase import Purchase, PurchaseItem
 from app.models.sale import Sale, SaleItem, SaleReturn, SaleReturnItem
-from app.models.inventory import StockBalance, StockMovement, InventoryCount, InventoryCountItem
+from app.models.inventory import (
+    StockBalance,
+    StockMovement,
+    InventoryCount,
+    InventoryCountItem,
+)
 from app.models.audit import AuditLog
 from app.models.category import Category
 from app.models.briefing import InventoryBriefing, InventoryRecommendation
 from app.models.notification import WeeklyOwnerSummarySettings
+from app.models.idempotency import IdempotencyRequest
+from app.models.sync_event import SyncEvent
+from app.models.subscription import BusinessSubscription, SubscriptionUsage
+from app.models.invitation import BusinessInvitation
 
 __all__ = [
     "Base",
@@ -35,4 +44,9 @@ __all__ = [
     "InventoryBriefing",
     "InventoryRecommendation",
     "WeeklyOwnerSummarySettings",
+    "IdempotencyRequest",
+    "SyncEvent",
+    "BusinessSubscription",
+    "SubscriptionUsage",
+    "BusinessInvitation",
 ]

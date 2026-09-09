@@ -47,9 +47,28 @@ class SignUpWithBusinessRequest(BaseModel):
             raise ValueError("Unknown timezone") from exc
         return value
 
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+
+class GoogleOAuthExchangeRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=4096)
+    code_verifier: str = Field(min_length=43, max_length=128)
+    redirect_uri: str = Field(min_length=1, max_length=2048)
+
+
+class InvitedSignupRequest(BaseModel):
+    invitation_token: str = Field(min_length=32, max_length=256)
+    password: str = Field(min_length=8, max_length=128)
+    first_name: str = Field(min_length=1, max_length=100)
+    last_name: str | None = Field(default=None, max_length=100)
+
+    @field_validator("first_name", "last_name")
+    @classmethod
+    def normalize_invited_name(cls, value: str | None) -> str | None:
+        return value.strip() if value else value
 
 
 class ChangePasswordRequest(BaseModel):
@@ -75,22 +94,25 @@ class UserProfileUpdate(BaseModel):
     def normalize_name(cls, value: str | None) -> str | None:
         return value.strip() if value else None
 
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
 
 class UserResponse(BaseModel):
     id: str
     email: str
     first_name: str
-    
+
     class Config:
         from_attributes = True
+
 
 class BusinessResponse(BaseModel):
     id: str
     name: str
     slug: str
-    
+
     class Config:
         from_attributes = True

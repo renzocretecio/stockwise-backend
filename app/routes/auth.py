@@ -1,3 +1,6 @@
+import logging
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.config.database import get_db
@@ -6,14 +9,21 @@ from app.models import BusinessMembership, User
 from app.models.permission import Permission, RolePermission
 from app.schemas.auth import (
     ChangePasswordRequest,
+    GoogleOAuthExchangeRequest,
+    InvitedSignupRequest,
     LoginRequest,
     SignUpWithBusinessRequest,
     UserProfileUpdate,
 )
 from app.services.auth import AuthService
 from app.services.business import BusinessService
+from app.services.entitlements import EntitlementService
+from app.services.members import MemberService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
 
 @router.post("/signup")
 async def signup(req: SignUpWithBusinessRequest, db: Session = Depends(get_db)):
@@ -28,9 +38,9 @@ async def signup(req: SignUpWithBusinessRequest, db: Session = Depends(get_db)):
             db,
             commit=False,
         )
-        
+
         user_id = user_result["user"]["id"]
-        
+
         # Create business
         business_slug = req.business_slug or (
             BusinessService.generate_unique_slug(req.business_name, db)
@@ -43,11 +53,12 @@ async def signup(req: SignUpWithBusinessRequest, db: Session = Depends(get_db)):
             req.timezone,
             db,
             commit=False,
+            grant_pro_trial=True,
         )
 
         db.commit()
         db.refresh(business)
-        
+
         return {
             "success": True,
             "user": user_result["user"],
@@ -59,17 +70,19 @@ async def signup(req: SignUpWithBusinessRequest, db: Session = Depends(get_db)):
                 "timezone": business.timezone,
                 "onboarding_completed": business.onboarding_completed,
             },
-            "access_token": user_result["access_token"]
+            "access_token": user_result["access_token"],
         }
     except HTTPException as e:
         db.rollback()
         raise e
     except Exception as e:
         db.rollback()
+        logger.exception("Signup transaction failed")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Unable to create account",
         ) from e
+
 
 @router.post("/login")
 async def login(req: LoginRequest, db: Session = Depends(get_db)):
@@ -82,15 +95,93 @@ async def login(req: LoginRequest, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
+@router.post("/signup/invited")
+async def signup_from_invitation(
+    req: InvitedSignupRequest,
+    db: Session = Depends(get_db),
+):
+    """Create an account without a new business and accept its invitation."""
+    try:
+        invitation = MemberService.find_valid_invitation(
+            req.invitation_token,
+            db,
+        )
+        user_result = AuthService.register(
+            invitation.email,
+            req.password,
+            req.first_name,
+            req.last_name or "",
+            db,
+            commit=False,
+        )
+        user = (
+            db.query(User)
+            .filter(
+                User.id == UUID(user_result["user"]["id"]),
+            )
+            .first()
+        )
+        membership = MemberService.accept_invitation(
+            req.invitation_token,
+            user,
+            db,
+        )
+        business = membership.business
+        return {
+            "success": True,
+            "user": user_result["user"],
+            "business": {
+                "id": str(business.id),
+                "name": business.name,
+                "slug": business.slug,
+                "currency_code": business.currency_code,
+                "timezone": business.timezone,
+                "onboarding_completed": business.onboarding_completed,
+                "role": membership.role.name,
+            },
+            "access_token": user_result["access_token"],
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Invited signup transaction failed")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unable to create the invited account",
+        ) from exc
+
+
+@router.post("/google/exchange")
+async def google_exchange(
+    payload: GoogleOAuthExchangeRequest,
+    db: Session = Depends(get_db),
+):
+    return {
+        "success": True,
+        **await AuthService.login_with_google(
+            payload.code,
+            payload.code_verifier,
+            payload.redirect_uri,
+            db,
+        ),
+    }
+
+
 @router.get("/me")
 def get_user_profile(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
-    memberships = db.query(BusinessMembership).filter(
-        BusinessMembership.user_id == current_user.id,
-        BusinessMembership.status == 'active'
-    ).all()
+    memberships = (
+        db.query(BusinessMembership)
+        .filter(
+            BusinessMembership.user_id == current_user.id,
+            BusinessMembership.status == "active",
+        )
+        .all()
+    )
 
     business_payload = []
     user_permissions = set()
@@ -115,29 +206,36 @@ def get_user_profile(
             )
         permissions = sorted({row[0] for row in permission_rows})
         user_permissions.update(permissions)
+        subscription = getattr(membership.business, "subscription", None)
 
-        business_payload.append({
-            "id": str(membership.business.id),
-            "name": membership.business.name,
-            "slug": membership.business.slug,
-            "currency_code": getattr(
-                membership.business,
-                "currency_code",
-                "PHP",
-            ),
-            "timezone": getattr(
-                membership.business,
-                "timezone",
-                "Asia/Manila",
-            ),
-            "onboarding_completed": getattr(
-                membership.business,
-                "onboarding_completed",
-                True,
-            ),
-            "role": membership.role.name if membership.role else None,
-            "permissions": permissions,
-        })
+        business_payload.append(
+            {
+                "id": str(membership.business.id),
+                "name": membership.business.name,
+                "slug": membership.business.slug,
+                "currency_code": getattr(
+                    membership.business,
+                    "currency_code",
+                    "PHP",
+                ),
+                "timezone": getattr(
+                    membership.business,
+                    "timezone",
+                    "Asia/Manila",
+                ),
+                "onboarding_completed": getattr(
+                    membership.business,
+                    "onboarding_completed",
+                    True,
+                ),
+                "role": membership.role.name if membership.role else None,
+                "permissions": permissions,
+                "plan": EntitlementService.effective_plan(subscription),
+                "subscription_status": EntitlementService.effective_status(
+                    subscription
+                ),
+            }
+        )
 
     return {
         "success": True,

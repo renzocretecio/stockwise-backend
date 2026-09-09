@@ -1,5 +1,6 @@
 from decimal import Decimal
 from datetime import datetime, timezone
+from uuid import UUID
 from sqlmodel import Session, select
 from fastapi import HTTPException, status
 from sqlalchemy import func
@@ -17,6 +18,7 @@ class InventoryCountService:
         payload: InventoryCountCreate,
         user_id: str,
         db: Session,
+        count_id: str | None = None,
     ) -> dict:
         """Start a new physical count session"""
         try:
@@ -41,6 +43,7 @@ class InventoryCountService:
                 )
 
             count = InventoryCount(
+                id=UUID(count_id) if count_id else None,
                 business_id=business_id,
                 status="in_progress",
                 notes=payload.name,   # ← using notes as the session label, since there's no `name` column

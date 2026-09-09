@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlmodel import Session
 
 from app.config.database import get_db
@@ -11,21 +11,26 @@ from app.schemas.notification import (
     WeeklyOwnerSummarySettingsResponse,
 )
 from app.services.weekly_owner_summary import WeeklyOwnerSummaryService
+from app.services.entitlements import EntitlementService
 
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
 
-def _owner_only(context: RequestContext):
-    if not context.membership.role or context.membership.role.name.lower() != "owner":
-        raise HTTPException(status_code=403, detail="Only the business owner can update notification settings")
+def _require_weekly_summary(context: RequestContext, db: Session) -> None:
+    EntitlementService.require_feature(
+        str(context.business_id),
+        "weekly_owner_summary",
+        db,
+    )
 
 
 @router.get("/weekly-owner-summary", response_model=WeeklyOwnerSummarySettingsResponse)
 async def get_weekly_owner_summary_settings(
-    context: RequestContext = Depends(require_permission("reports.read")),
+    context: RequestContext = Depends(require_permission("notifications.manage")),
     db: Session = Depends(get_db),
 ):
+    _require_weekly_summary(context, db)
     business = context.membership.business
     row = WeeklyOwnerSummaryService.get_or_create_settings(
         business, context.user.email, db
@@ -36,10 +41,10 @@ async def get_weekly_owner_summary_settings(
 @router.put("/weekly-owner-summary", response_model=WeeklyOwnerSummarySettingsResponse)
 async def update_weekly_owner_summary_settings(
     payload: WeeklyOwnerSummarySettingsPayload,
-    context: RequestContext = Depends(require_permission("reports.read")),
+    context: RequestContext = Depends(require_permission("notifications.manage")),
     db: Session = Depends(get_db),
 ):
-    _owner_only(context)
+    _require_weekly_summary(context, db)
     business = context.membership.business
     row = WeeklyOwnerSummaryService.get_or_create_settings(
         business, context.user.email, db
@@ -59,9 +64,10 @@ async def update_weekly_owner_summary_settings(
 
 @router.get("/weekly-owner-summary/preview", response_model=WeeklyOwnerSummaryResponse)
 async def preview_weekly_owner_summary(
-    context: RequestContext = Depends(require_permission("reports.read")),
+    context: RequestContext = Depends(require_permission("notifications.manage")),
     db: Session = Depends(get_db),
 ):
+    _require_weekly_summary(context, db)
     business = context.membership.business
     row = WeeklyOwnerSummaryService.get_or_create_settings(
         business, context.user.email, db
@@ -72,10 +78,10 @@ async def preview_weekly_owner_summary(
 
 @router.post("/weekly-owner-summary/send", response_model=WeeklyOwnerSummaryResponse)
 async def send_weekly_owner_summary(
-    context: RequestContext = Depends(require_permission("reports.read")),
+    context: RequestContext = Depends(require_permission("notifications.manage")),
     db: Session = Depends(get_db),
 ):
-    _owner_only(context)
+    _require_weekly_summary(context, db)
     business = context.membership.business
     row = WeeklyOwnerSummaryService.get_or_create_settings(
         business, context.user.email, db

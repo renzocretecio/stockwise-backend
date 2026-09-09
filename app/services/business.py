@@ -1,13 +1,67 @@
 import re
 import unicodedata
+from sqlalchemy import func
 from sqlalchemy.orm import Session
-from app.models import Business, BusinessMembership, User, Role
+from app.models import Business, BusinessMembership, BusinessSubscription, User, Role
 from app.models.permission import Permission, RolePermission
-from datetime import datetime, timezone
+from app.config.rbac import (
+    SYSTEM_ROLE_DESCRIPTIONS,
+    SYSTEM_ROLE_PERMISSIONS,
+)
+from datetime import datetime, timedelta, timezone
 
 from app.schemas.business import BusinessProfileUpdate
+from app.services.entitlements import EntitlementService, PRO_TRIAL_DAYS
+
 
 class BusinessService:
+    @staticmethod
+    def ensure_system_roles(business_id: str, db: Session) -> dict[str, Role]:
+        """Create and synchronize the built-in roles for one business."""
+        permissions = {
+            permission.key: permission for permission in db.query(Permission).all()
+        }
+        roles: dict[str, Role] = {}
+
+        for role_name, permission_keys in SYSTEM_ROLE_PERMISSIONS.items():
+            role = (
+                db.query(Role)
+                .filter(
+                    Role.business_id == business_id,
+                    func.lower(Role.name) == role_name,
+                )
+                .first()
+            )
+            if not role:
+                role = Role(
+                    business_id=business_id,
+                    name=role_name,
+                    description=SYSTEM_ROLE_DESCRIPTIONS[role_name],
+                    is_system_role=True,
+                )
+                db.add(role)
+                db.flush()
+
+            roles[role_name] = role
+            existing_ids = {
+                row[0]
+                for row in db.query(RolePermission.permission_id)
+                .filter(RolePermission.role_id == role.id)
+                .all()
+            }
+            links = [
+                {
+                    "role_id": role.id,
+                    "permission_id": permissions[key].id,
+                }
+                for key in permission_keys
+                if key in permissions and permissions[key].id not in existing_ids
+            ]
+            if links:
+                db.execute(RolePermission.__table__.insert(), links)
+
+        return roles
+
     @staticmethod
     def generate_unique_slug(name: str, db: Session) -> str:
         normalized = unicodedata.normalize("NFKD", name)
@@ -29,82 +83,75 @@ class BusinessService:
         name: str,
         slug: str,
         currency_code: str,
-        timezone: str,
+        timezone_name: str,
         db: Session,
         *,
         commit: bool = True,
+        grant_pro_trial: bool = False,
     ):
         """Create a new business and make user the owner"""
         existing = db.query(Business).filter(Business.slug == slug).first()
         if existing:
             raise ValueError("Business slug already exists")
-        
+
         business = Business(
-            name=name,
-            slug=slug,
-            currency_code=currency_code,
-            timezone=timezone
+            name=name, slug=slug, currency_code=currency_code, timezone=timezone_name
         )
         db.add(business)
         db.flush()
-        
-        # Create owner role if not exists
-        owner_role = db.query(Role).filter(
-            Role.business_id == business.id,
-            Role.name == 'owner'
-        ).first()
-        
-        if not owner_role:
-            owner_role = Role(
-                business_id=business.id,
-                name='owner',
-                description='Business owner',
-                is_system_role=True
-            )
-            db.add(owner_role)
-            db.flush()
 
-        # Business owners receive every registered permission. Permissions
-        # are linked explicitly so the same authorization path is used for
-        # owners and custom roles; the role name itself grants no access.
-        permissions = db.query(Permission).all()
-        existing_permission_ids = {
-            row[0]
-            for row in db.query(RolePermission.permission_id)
-            .filter(RolePermission.role_id == owner_role.id)
-            .all()
-        }
-        permission_links = [
-            {
-                "role_id": owner_role.id,
-                "permission_id": permission.id,
-            }
-            for permission in permissions
-            if permission.id not in existing_permission_ids
-        ]
-        if permission_links:
-            # Role uses the application's SQLAlchemy Base while the
-            # permission models use SQLModel metadata. A direct insert avoids
-            # cross-metadata ORM dependency sorting during flush.
-            db.execute(RolePermission.__table__.insert(), permission_links)
-        
+        if grant_pro_trial:
+            trial_started_at = datetime.now(timezone.utc)
+            updated_users = (
+                db.query(User)
+                .filter(
+                    User.id == user_id,
+                    User.pro_trial_used_at.is_(None),
+                )
+                .update(
+                    {User.pro_trial_used_at: trial_started_at},
+                    synchronize_session=False,
+                )
+            )
+            if updated_users != 1:
+                raise ValueError("The user has already used a Pro trial")
+            subscription = BusinessSubscription(
+                business_id=business.id,
+                plan="pro",
+                status="trialing",
+                provider="manual",
+                trial_started_at=trial_started_at,
+                trial_ends_at=(trial_started_at + timedelta(days=PRO_TRIAL_DAYS)),
+            )
+        else:
+            subscription = BusinessSubscription(
+                business_id=business.id,
+                plan="free",
+                status="active",
+                provider="manual",
+            )
+        db.add(subscription)
+
+        roles = BusinessService.ensure_system_roles(business.id, db)
+        owner_role = roles["owner"]
+
         # Add creator as owner
         membership = BusinessMembership(
             business_id=business.id,
             user_id=user_id,
             role_id=owner_role.id,
-            status='active',
-            joined_at=datetime.now()
+            status="active",
+            joined_at=datetime.now(),
         )
         db.add(membership)
-        
+
         if commit:
             db.commit()
             db.refresh(business)
         else:
             db.flush()
         return business
-    
+
     @staticmethod
     def get_business(business_id: str, db: Session):
         """Get business by ID"""
@@ -127,24 +174,35 @@ class BusinessService:
         db.commit()
         db.refresh(business)
         return business
-    
+
     @staticmethod
     def get_user_businesses(user_id: str, db: Session):
         """Get all businesses a user is member of"""
-        memberships = db.query(BusinessMembership).filter(
-            BusinessMembership.user_id == user_id,
-            BusinessMembership.status == 'active'
-        ).all()
-        
-        return [
-            {
-                "id": str(m.business_id),
-                "name": m.business.name,
-                "role": m.role.name,
-                "slug": m.business.slug,
-                "currency_code": m.business.currency_code,
-                "timezone": m.business.timezone,
-                "onboarding_completed": m.business.onboarding_completed,
-            }
-            for m in memberships
-        ]
+        memberships = (
+            db.query(BusinessMembership)
+            .filter(
+                BusinessMembership.user_id == user_id,
+                BusinessMembership.status == "active",
+            )
+            .all()
+        )
+
+        businesses = []
+        for membership in memberships:
+            subscription = getattr(membership.business, "subscription", None)
+            businesses.append(
+                {
+                    "id": str(membership.business_id),
+                    "name": membership.business.name,
+                    "role": membership.role.name,
+                    "slug": membership.business.slug,
+                    "currency_code": membership.business.currency_code,
+                    "timezone": membership.business.timezone,
+                    "onboarding_completed": (membership.business.onboarding_completed),
+                    "plan": EntitlementService.effective_plan(subscription),
+                    "subscription_status": (
+                        EntitlementService.effective_status(subscription)
+                    ),
+                }
+            )
+        return businesses

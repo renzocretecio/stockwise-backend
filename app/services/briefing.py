@@ -22,6 +22,7 @@ from app.models.sale import Sale, SaleItem, SaleReturn, SaleReturnItem
 from app.schemas.briefing import BriefingNarration
 from app.services.communication import GroqCommunicationService
 from app.services.dashboard import DashboardService
+from app.services.entitlements import EntitlementService
 
 
 CURRENCY_SYMBOLS = {
@@ -877,9 +878,6 @@ class BriefingService:
             and existing.metrics_version == BriefingService.METRICS_VERSION
         ):
             return BriefingService.format(existing)
-        if existing:
-            db.delete(existing)
-            db.flush()
         target_date = today - timedelta(days=1)
         daily_recap = BriefingService._daily_business_recap(
             business, target_date, db
@@ -899,6 +897,9 @@ class BriefingService:
             and settings.GROQ_API_KEY
             else template
         )
+        uses_ai_quota = force and isinstance(narrator, GroqNarrator)
+        if uses_ai_quota:
+            EntitlementService.consume_ai_insight(business_id, db)
         provider, model, error_message = narrator.provider, narrator.model, None
         try:
             dashboard_context = DashboardService.get_dashboard(
@@ -926,12 +927,17 @@ class BriefingService:
                 narration, currency_code
             )
         except Exception as exc:
+            if uses_ai_quota:
+                EntitlementService.refund_ai_insight(business_id, db)
             provider, model, error_message = "template", None, str(exc)[:1000]
             narration = await template.generate(
                 recommendations,
                 daily_recap,
                 BriefingService._currency_symbol(currency_code),
             )
+        if existing:
+            db.delete(existing)
+            db.flush()
         briefing = InventoryBriefing(
             business_id=business.id,
             briefing_date=today,

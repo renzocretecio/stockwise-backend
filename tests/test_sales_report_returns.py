@@ -53,6 +53,8 @@ def test_sales_report_subtracts_completed_returns():
         "total_items_sold": 1.0,
         "average_sale_value": 100.0,
         "voided_count": 0,
+        "return_count": 1,
+        "return_amount": 100.0,
     }
     assert report["by_day"] == [
         {

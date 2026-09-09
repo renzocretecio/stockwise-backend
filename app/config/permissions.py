@@ -20,17 +20,21 @@ class RequestContext:
 
 
 def get_request_context(
-    business_id: UUID = Header(alias="X-Business-ID"),
+    x_business_id: UUID = Header(alias="X-Business-ID"),
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_db),
 ) -> RequestContext:
-    membership = session.execute(
-        select(BusinessMembership).where(
-            BusinessMembership.user_id == current_user.id,
-            BusinessMembership.business_id == business_id,
-            BusinessMembership.status == "active",
+    membership = (
+        session.execute(
+            select(BusinessMembership).where(
+                BusinessMembership.user_id == current_user.id,
+                BusinessMembership.business_id == x_business_id,
+                BusinessMembership.status == "active",
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
 
     if not membership:
         raise HTTPException(
@@ -38,9 +42,13 @@ def get_request_context(
             detail="You do not belong to this business",
         )
 
+    from app.services.entitlements import EntitlementService
+
+    EntitlementService.require_membership_access(membership, session)
+
     return RequestContext(
         user=current_user,
-        business_id=business_id,
+        business_id=x_business_id,
         membership=membership,
     )
 

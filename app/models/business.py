@@ -36,6 +36,12 @@ class Business(Base):
         back_populates="business",
         cascade="all, delete-orphan",
     )
+    subscription = relationship(
+        "BusinessSubscription",
+        back_populates="business",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
 
 class Role(Base):
     __tablename__ = "roles"

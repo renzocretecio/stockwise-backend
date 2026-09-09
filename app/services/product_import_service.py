@@ -4,6 +4,7 @@ import io
 from decimal import Decimal, InvalidOperation
 
 import pandas as pd
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -11,6 +12,7 @@ from app.models.inventory import StockBalance
 from app.models.product import Product
 from app.models.product import Supplier
 from app.models.category import Category
+from app.services.entitlements import EntitlementService
 from app.schemas.product_import import (
     ImportRowError,
     ProductImportPreview,
@@ -490,6 +492,11 @@ def commit_product_import(
 
                 category_id = category.id
 
+            EntitlementService.require_active_sku_capacity(
+                business_id,
+                session,
+            )
+
             product = Product(
                 business_id=business_id,
                 supplier_id=supplier_id,
@@ -546,6 +553,9 @@ def commit_product_import(
             ),
         }
 
+    except HTTPException:
+        session.rollback()
+        raise
     except Exception as exc:
         session.rollback()
 

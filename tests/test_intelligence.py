@@ -1,30 +1,119 @@
 import pytest
-from fastapi import HTTPException
 from types import SimpleNamespace
 
+from app.services import intelligence
+from app.services.entitlements import EntitlementService
 from app.services.intelligence import IntelligenceService
 
 
-@pytest.mark.parametrize(
-    ("question", "intent"),
-    [
-        ("What should I reorder this week?", "reorder_products"),
-        ("Which products are not selling?", "slow_moving_products"),
-        ("Did we have unusual stock losses?", "inventory_anomalies"),
-        ("What were my top selling products?", "top_selling_products"),
-        ("Why were sales lower this week?", "sales_performance"),
-        ("Which products have the best profit?", "profitability"),
-        ("Which supplier has the longest lead time?", "supplier_performance"),
-    ],
-)
-def test_questions_are_routed_to_approved_intents(question, intent):
-    assert IntelligenceService.classify(question) == intent
+@pytest.mark.asyncio
+async def test_template_response_does_not_consume_ai_quota(monkeypatch):
+    def unexpected_consume(*_args, **_kwargs):
+        raise AssertionError("Template responses must not consume quota")
+
+    monkeypatch.setattr(intelligence, "communication_enabled", lambda: False)
+    monkeypatch.setattr(
+        EntitlementService,
+        "consume_ai_insight",
+        unexpected_consume,
+    )
+
+    provider, _, _ = await IntelligenceService.communicate(
+        "reorder_products",
+        {"forecasts": []},
+        "Explain the recommendation.",
+        "business-id",
+        object(),
+    )
+
+    assert provider == "template"
 
 
-def test_unsupported_question_is_rejected_before_llm():
-    with pytest.raises(HTTPException) as error:
-        IntelligenceService.classify("Write me a poem")
-    assert error.value.status_code == 422
+@pytest.mark.asyncio
+async def test_failed_provider_request_is_refunded_on_failure(monkeypatch):
+    events = []
+    database = SimpleNamespace(
+        commit=lambda: events.append("commit"),
+        rollback=lambda: events.append("rollback"),
+    )
+
+    class FailingCommunicator:
+        model = "test-model"
+
+        async def explain(self, *_args, **_kwargs):
+            raise RuntimeError("Provider unavailable")
+
+    monkeypatch.setattr(intelligence, "communication_enabled", lambda: True)
+    monkeypatch.setattr(
+        intelligence,
+        "GroqCommunicationService",
+        FailingCommunicator,
+    )
+    monkeypatch.setattr(
+        EntitlementService,
+        "consume_ai_insight",
+        lambda *_args, **_kwargs: events.append("reserve"),
+    )
+    monkeypatch.setattr(
+        EntitlementService,
+        "refund_ai_insight",
+        lambda *_args, **_kwargs: events.append("refund"),
+    )
+
+    provider, _, _ = await IntelligenceService.communicate(
+        "reorder_products",
+        {"forecasts": []},
+        "Explain the recommendation.",
+        "business-id",
+        database,
+    )
+
+    assert provider == "template"
+    assert events == ["reserve", "commit", "refund", "commit"]
+
+
+@pytest.mark.asyncio
+async def test_successful_provider_request_consumes_quota_once(monkeypatch):
+    events = []
+    database = SimpleNamespace(commit=lambda: events.append("commit"))
+
+    class SuccessfulCommunicator:
+        model = "test-model"
+
+        async def explain(self, *_args, **_kwargs):
+            return IntelligenceService.fallback(
+                "reorder_products",
+                {"forecasts": []},
+            )
+
+    monkeypatch.setattr(intelligence, "communication_enabled", lambda: True)
+    monkeypatch.setattr(
+        intelligence,
+        "GroqCommunicationService",
+        SuccessfulCommunicator,
+    )
+    monkeypatch.setattr(
+        EntitlementService,
+        "consume_ai_insight",
+        lambda *_args, **_kwargs: events.append("reserve"),
+    )
+    monkeypatch.setattr(
+        EntitlementService,
+        "refund_ai_insight",
+        lambda *_args, **_kwargs: events.append("refund"),
+    )
+
+    provider, model, _ = await IntelligenceService.communicate(
+        "reorder_products",
+        {"forecasts": []},
+        "Explain the recommendation.",
+        "business-id",
+        database,
+    )
+
+    assert provider == "groq"
+    assert model == "test-model"
+    assert events == ["reserve", "commit"]
 
 
 def test_reorder_fallback_uses_precalculated_quantity():

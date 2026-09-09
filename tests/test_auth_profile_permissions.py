@@ -71,6 +71,8 @@ def test_get_user_profile_includes_permissions():
         "view_products",
     ]
     assert result["businesses"][0]["currency_code"] == "USD"
+    assert result["businesses"][0]["plan"] == "free"
+    assert result["businesses"][0]["subscription_status"] == "active"
 
 
 def test_update_user_profile_saves_normalized_names():

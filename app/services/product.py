@@ -3,6 +3,7 @@ from app.models import Product, Supplier, StockBalance, Category
 from decimal import Decimal
 from fastapi import HTTPException, status
 from app.schemas.product import ProductCreate
+from app.services.entitlements import EntitlementService
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import and_, func
 from sqlalchemy.orm import joinedload
@@ -92,7 +93,9 @@ class ProductService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Selling price must be greater than or equal to cost price"
                 )
-            
+
+            EntitlementService.require_active_sku_capacity(business_id, db)
+
             # 6. Create product entity
             product = Product(
                 business_id=business_id,

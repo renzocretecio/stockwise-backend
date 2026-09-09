@@ -39,7 +39,7 @@ async def create_sale(
 async def create_return(
     sale_id: str,
     payload: SaleReturnCreate,
-    context: RequestContext = Depends(require_permission("sales.void")),
+    context: RequestContext = Depends(require_permission("sales.return")),
     db: Session = Depends(get_db),
 ):
     """Create a partial or complete return and restore eligible stock."""

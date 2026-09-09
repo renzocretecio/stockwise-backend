@@ -20,10 +20,13 @@ class IntelligenceResponse(BaseModel):
     context: dict[str, Any]
 
 
-class AskIntelligenceRequest(BaseModel):
-    question: str = Field(min_length=3, max_length=500)
-
-
 class ReportSummaryRequest(BaseModel):
-    report: Literal["sales", "profit", "inventory", "purchases"]
-    period: Literal["daily", "weekly", "monthly"] = "monthly"
+    report: Literal[
+        "sales",
+        "purchases",
+        "inventory",
+        "profit",
+        "low_stock",
+        "movements",
+    ]
+    days: Literal[7, 30, 90, 365] = 30

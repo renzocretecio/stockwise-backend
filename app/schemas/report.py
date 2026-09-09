@@ -14,6 +14,8 @@ class SalesReportSummary(BaseModel):
     total_items_sold: float
     average_sale_value: float
     voided_count: int
+    return_count: int
+    return_amount: float
 
 
 class SalesReportByDay(BaseModel):
@@ -196,3 +198,8 @@ class StockMovementReportResponse(BaseModel):
     period_days: int
     by_type: list[StockMovementSummaryByType]
     total_movements: int
+
+
+class DashboardPdfExportRequest(BaseModel):
+    start_date: date
+    end_date: date

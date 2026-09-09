@@ -689,6 +689,16 @@ class ReportService:
                 "total_items_sold": float(total_items_sold),
                 "average_sale_value": float(average_sale_value),
                 "voided_count": len(voided_sales),
+                "return_count": len(completed_returns),
+                "return_amount": float(
+                    sum(
+                        (
+                            Decimal(sale_return.refund_amount)
+                            for sale_return in completed_returns
+                        ),
+                        zero,
+                    )
+                ),
             },
             "by_day": by_day,
             "top_products": top_products,

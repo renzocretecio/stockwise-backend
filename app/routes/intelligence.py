@@ -4,7 +4,6 @@ from sqlmodel import Session
 from app.config.database import get_db
 from app.config.permissions import RequestContext, require_permission
 from app.schemas.intelligence import (
-    AskIntelligenceRequest,
     IntelligenceResponse,
     ReportSummaryRequest,
 )
@@ -12,17 +11,6 @@ from app.services.intelligence import IntelligenceService
 
 
 router = APIRouter(prefix="/intelligence", tags=["intelligence"])
-
-
-@router.post("/ask", response_model=IntelligenceResponse)
-async def ask_intelligence(
-    payload: AskIntelligenceRequest,
-    context: RequestContext = Depends(require_permission("reports.read")),
-    db: Session = Depends(get_db),
-):
-    return await IntelligenceService.ask(
-        str(context.business_id), payload.question, db
-    )
 
 
 @router.get(
@@ -56,9 +44,9 @@ async def explain_anomaly(
 @router.post("/reports/summary", response_model=IntelligenceResponse)
 async def summarize_report(
     payload: ReportSummaryRequest,
-    context: RequestContext = Depends(require_permission("reports.read")),
+    context: RequestContext = Depends(require_permission("reports.summarize")),
     db: Session = Depends(get_db),
 ):
     return await IntelligenceService.summarize_report(
-        str(context.business_id), payload.report, payload.period, db
+        str(context.business_id), payload.report, payload.days, db
     )
