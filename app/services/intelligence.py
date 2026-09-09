@@ -207,6 +207,8 @@ class IntelligenceService:
         report: str,
         days: int,
         db: Session,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> dict:
         business = db.execute(
             select(Business).where(Business.id == business_id)
@@ -223,13 +225,16 @@ class IntelligenceService:
         except ZoneInfoNotFoundError:
             report_timezone = ZoneInfo("UTC")
 
-        period_end = datetime.now(report_timezone).date()
-        period_start = period_end - timedelta(days=days - 1)
+        period_end = end_date or datetime.now(report_timezone).date()
+        period_start = start_date or (
+            period_end - timedelta(days=days - 1)
+        )
+        period_days = (period_end - period_start).days + 1
         period_label = f"{period_start.isoformat()} to {period_end.isoformat()}"
         analytics = IntelligenceService._build_report_summary_context(
             business_id=business_id,
             report=report,
-            days=days,
+            days=period_days,
             period_start=period_start,
             period_end=period_end,
             timezone_name=timezone_name,
@@ -330,7 +335,14 @@ class IntelligenceService:
             }
 
         if report == "purchases":
-            current = ReportService.get_purchase_report(business_id, days, db)
+            current = ReportService.get_purchase_report(
+                business_id,
+                days,
+                db,
+                start_date=period_start,
+                end_date=period_end,
+                timezone_name=timezone_name,
+            )
             return {
                 "metrics": current["summary"],
                 "top_suppliers": [
@@ -358,7 +370,14 @@ class IntelligenceService:
             }
 
         if report == "profit":
-            current = ReportService.get_profit_report(business_id, days, db)
+            current = ReportService.get_profit_report(
+                business_id,
+                days,
+                db,
+                start_date=period_start,
+                end_date=period_end,
+                timezone_name=timezone_name,
+            )
             return {
                 "metrics": current["summary"],
                 "top_products": [
@@ -400,6 +419,9 @@ class IntelligenceService:
             business_id,
             days,
             db,
+            start_date=period_start,
+            end_date=period_end,
+            timezone_name=timezone_name,
         )
         return {
             "metrics": {"total_movements": current["total_movements"]},

@@ -18,6 +18,51 @@ from app.schemas.purchase import PurchaseStatus
 
 
 class ReportService:
+    @staticmethod
+    def _resolve_period(
+        *,
+        days: int,
+        start_date: date | None,
+        end_date: date | None,
+        timezone_name: str,
+    ) -> tuple[datetime, datetime | None, int, ZoneInfo]:
+        """Resolve a trailing period or business-local calendar range."""
+        try:
+            zone = ZoneInfo(timezone_name)
+        except Exception:
+            zone = ZoneInfo("UTC")
+
+        if start_date is None or end_date is None:
+            return (
+                datetime.now(timezone.utc) - timedelta(days=days),
+                None,
+                days,
+                zone,
+            )
+
+        range_start = datetime.combine(
+            start_date,
+            time.min,
+            tzinfo=zone,
+        ).astimezone(timezone.utc)
+        range_end = datetime.combine(
+            end_date + timedelta(days=1),
+            time.min,
+            tzinfo=zone,
+        ).astimezone(timezone.utc)
+        return (
+            range_start,
+            range_end,
+            (end_date - start_date).days + 1,
+            zone,
+        )
+
+    @staticmethod
+    def _local_date_key(value: datetime, zone: ZoneInfo) -> str:
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(zone).date().isoformat()
+
     # ========================================================================
     # OPERATIONAL METRICS
     # ========================================================================
@@ -709,15 +754,36 @@ class ReportService:
     # ========================================================================
 
     @staticmethod
-    def get_purchase_report(business_id: str, days: int, db: Session) -> dict:
-        """Purchase report for the last N days"""
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    def get_purchase_report(
+        business_id: str,
+        days: int,
+        db: Session,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        timezone_name: str = "UTC",
+    ) -> dict:
+        """Purchase report for a trailing period or explicit date range."""
+        cutoff, range_end, period_days, report_zone = (
+            ReportService._resolve_period(
+                days=days,
+                start_date=start_date,
+                end_date=end_date,
+                timezone_name=timezone_name,
+            )
+        )
+        event_at = func.coalesce(
+            Purchase.received_at,
+            Purchase.created_at,
+        )
+        purchase_filters = [
+            Purchase.business_id == business_id,
+            event_at >= cutoff,
+        ]
+        if range_end is not None:
+            purchase_filters.append(event_at < range_end)
 
         purchases = db.execute(
-            select(Purchase).where(
-                Purchase.business_id == business_id,
-                Purchase.created_at >= cutoff,
-            )
+            select(Purchase).where(*purchase_filters)
         ).scalars().all()
 
         received = [p for p in purchases if p.status == PurchaseStatus.RECEIVED.value]
@@ -742,7 +808,10 @@ class ReportService:
         # Group by day
         by_day_map: dict[str, dict] = {}
         for purchase in received:
-            day_key = (purchase.received_at or purchase.created_at).date().isoformat()
+            day_key = ReportService._local_date_key(
+                purchase.received_at or purchase.created_at,
+                report_zone,
+            )
             if day_key not in by_day_map:
                 by_day_map[day_key] = {"spent": Decimal("0"), "count": 0}
             by_day_map[day_key]["spent"] += purchase.total_amount
@@ -779,7 +848,7 @@ class ReportService:
             })
 
         return {
-            "period_days": days,
+            "period_days": period_days,
             "summary": {
                 "total_purchases": len(received),
                 "total_spent": float(total_spent),
@@ -863,20 +932,35 @@ class ReportService:
     # ========================================================================
 
     @staticmethod
-    def get_profit_report(business_id: str, days: int, db: Session) -> dict:
-        """Profit report for the last N days, broken down by product"""
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    def get_profit_report(
+        business_id: str,
+        days: int,
+        db: Session,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        timezone_name: str = "UTC",
+    ) -> dict:
+        """Profit report for a trailing period or explicit date range."""
+        cutoff, range_end, period_days, _ = ReportService._resolve_period(
+            days=days,
+            start_date=start_date,
+            end_date=end_date,
+            timezone_name=timezone_name,
+        )
+        sale_filters = [
+            Sale.business_id == business_id,
+            Sale.status.in_([
+                SaleStatus.COMPLETED.value,
+                SaleStatus.PARTIALLY_RETURNED.value,
+                SaleStatus.RETURNED.value,
+            ]),
+            Sale.sale_date >= cutoff,
+        ]
+        if range_end is not None:
+            sale_filters.append(Sale.sale_date < range_end)
 
         sales = db.execute(
-            select(Sale).where(
-                Sale.business_id == business_id,
-                Sale.status.in_([
-                    SaleStatus.COMPLETED.value,
-                    SaleStatus.PARTIALLY_RETURNED.value,
-                    SaleStatus.RETURNED.value,
-                ]),
-                Sale.created_at >= cutoff,
-            )
+            select(Sale).where(*sale_filters)
         ).scalars().all()
 
         sale_ids = [s.id for s in sales]
@@ -935,7 +1019,7 @@ class ReportService:
             })
 
         return {
-            "period_days": days,
+            "period_days": period_days,
             "summary": {
                 "total_revenue": float(total_revenue),
                 "total_cost": float(total_cost),
@@ -996,9 +1080,27 @@ class ReportService:
     # ========================================================================
 
     @staticmethod
-    def get_stock_movement_report(business_id: str, days: int, db: Session) -> dict:
-        """Summary of stock movements by type"""
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    def get_stock_movement_report(
+        business_id: str,
+        days: int,
+        db: Session,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        timezone_name: str = "UTC",
+    ) -> dict:
+        """Summarize stock movements for a period or explicit date range."""
+        cutoff, range_end, period_days, _ = ReportService._resolve_period(
+            days=days,
+            start_date=start_date,
+            end_date=end_date,
+            timezone_name=timezone_name,
+        )
+        movement_filters = [
+            StockMovement.business_id == business_id,
+            StockMovement.created_at >= cutoff,
+        ]
+        if range_end is not None:
+            movement_filters.append(StockMovement.created_at < range_end)
 
         rows = db.execute(
             select(
@@ -1006,10 +1108,7 @@ class ReportService:
                 func.count().label("total"),
                 func.sum(StockMovement.quantity).label("total_change"),
             )
-            .where(
-                StockMovement.business_id == business_id,
-                StockMovement.created_at >= cutoff,
-            )
+            .where(*movement_filters)
             .group_by(StockMovement.movement_type)
         ).all()
 
@@ -1025,7 +1124,7 @@ class ReportService:
         total_movements = sum(item["total_movements"] for item in by_type)
 
         return {
-            "period_days": days,
+            "period_days": period_days,
             "by_type": by_type,
             "total_movements": total_movements,
         }

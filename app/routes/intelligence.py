@@ -48,5 +48,10 @@ async def summarize_report(
     db: Session = Depends(get_db),
 ):
     return await IntelligenceService.summarize_report(
-        str(context.business_id), payload.report, payload.days, db
+        str(context.business_id),
+        payload.report,
+        payload.days,
+        db,
+        start_date=payload.start_date,
+        end_date=payload.end_date,
     )
