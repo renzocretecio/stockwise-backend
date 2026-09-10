@@ -9,8 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.inventory import StockBalance
-from app.models.product import Product
-from app.models.product import Supplier
+from app.models.product import Product, ProductSupplier, Supplier
 from app.models.category import Category
 from app.services.entitlements import EntitlementService
 from app.schemas.product_import import (
@@ -518,6 +517,21 @@ def commit_product_import(
 
             session.add(product)
             session.flush()
+
+            if supplier_id:
+                session.add(
+                    ProductSupplier(
+                        business_id=business_id,
+                        product_id=product.id,
+                        supplier_id=supplier_id,
+                        unit_cost=row.cost_price,
+                        lead_time_days=row.lead_time_days,
+                        minimum_order_quantity=Decimal("1"),
+                        pack_size=Decimal("1"),
+                        is_preferred=True,
+                        is_active=True,
+                    )
+                )
 
             stock_balance = StockBalance(
                 business_id=business_id,

@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.config.database import get_db
 from app.core.security import get_current_user
+from app.core.platform_access import is_superadmin_user
 from app.models import BusinessMembership, User
 from app.models.permission import Permission, RolePermission
 from app.schemas.auth import (
@@ -244,6 +245,7 @@ def get_user_profile(
             "email": current_user.email,
             "first_name": current_user.first_name,
             "last_name": current_user.last_name,
+            "is_superadmin": is_superadmin_user(current_user),
             "permissions": sorted(user_permissions),
         },
         "businesses": business_payload,
@@ -267,6 +269,7 @@ def update_user_profile(
             "email": current_user.email,
             "first_name": current_user.first_name,
             "last_name": current_user.last_name,
+            "is_superadmin": is_superadmin_user(current_user),
         },
     }
 

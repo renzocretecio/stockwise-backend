@@ -34,8 +34,10 @@ class Settings(BaseSettings):
     GROQ_MODEL: str = "openai/gpt-oss-20b"
     NARRATOR_TIMEOUT_SECONDS: float = 60.0
 
-    # Billing administration. Required only for the internal manual-plan API.
+    # Platform administration. The email list is a bootstrap fallback; use the
+    # database-backed superadmin flag for ongoing access management.
     BILLING_ADMIN_TOKEN: Optional[str] = None
+    BILLING_ADMIN_EMAILS: str = ""
 
     # Weekly owner email
     APP_URL: str = "http://localhost:3000"

@@ -1,7 +1,104 @@
-from sqlalchemy import Column, String, DateTime, ForeignKey, Boolean, Text, Integer, Numeric, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.orm import relationship
 from sqlalchemy.types import UUID as UUID_Type
+
 from app.models.base import Base, uuid_column
+
+
+class ProductSupplier(Base):
+    """A supplier-specific purchasing option for a product."""
+
+    __tablename__ = "product_suppliers"
+    __table_args__ = (
+        UniqueConstraint(
+            "product_id",
+            "supplier_id",
+            name="uq_product_suppliers_product_supplier",
+        ),
+        CheckConstraint(
+            "unit_cost >= 0",
+            name="ck_product_suppliers_unit_cost",
+        ),
+        CheckConstraint(
+            "lead_time_days >= 1",
+            name="ck_product_suppliers_lead_time_days",
+        ),
+        CheckConstraint(
+            "minimum_order_quantity > 0",
+            name="ck_product_suppliers_minimum_order_quantity",
+        ),
+        CheckConstraint(
+            "pack_size > 0",
+            name="ck_product_suppliers_pack_size",
+        ),
+        Index(
+            "uq_product_suppliers_preferred",
+            "product_id",
+            unique=True,
+            postgresql_where=text("is_preferred"),
+        ),
+    )
+
+    id = uuid_column(primary_key=True)
+    business_id = Column(
+        UUID_Type(as_uuid=True),
+        ForeignKey("businesses.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    product_id = Column(
+        UUID_Type(as_uuid=True),
+        ForeignKey("products.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    supplier_id = Column(
+        UUID_Type(as_uuid=True),
+        ForeignKey("suppliers.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    supplier_sku = Column(String(100))
+    unit_cost = Column(Numeric(14, 2), default=0, nullable=False)
+    lead_time_days = Column(Integer, default=3, nullable=False)
+    minimum_order_quantity = Column(
+        Numeric(14, 3),
+        default=1,
+        nullable=False,
+    )
+    pack_size = Column(Numeric(14, 3), default=1, nullable=False)
+    is_preferred = Column(Boolean, default=False, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    business = relationship("Business")
+    product = relationship("Product", back_populates="supplier_links")
+    supplier = relationship("Supplier", back_populates="product_links")
+
 
 class Supplier(Base):
     __tablename__ = "suppliers"
@@ -22,7 +119,13 @@ class Supplier(Base):
     
     business = relationship("Business")
     products = relationship("Product", back_populates="supplier")
+    product_links = relationship(
+        "ProductSupplier",
+        back_populates="supplier",
+        cascade="all, delete-orphan",
+    )
     purchases = relationship("Purchase", back_populates="supplier")
+
 
 class Product(Base):
     __tablename__ = "products"
@@ -50,6 +153,11 @@ class Product(Base):
     
     business = relationship("Business", back_populates="products")
     supplier = relationship("Supplier", back_populates="products")
+    supplier_links = relationship(
+        "ProductSupplier",
+        back_populates="product",
+        cascade="all, delete-orphan",
+    )
     category = relationship("Category", back_populates="products")  # ← This stays, it's the real FK relationship
 
     stock_balance = relationship(

@@ -27,7 +27,7 @@ from app.models.inventory import (
     StockMovement,
 )
 from app.models.membership import BusinessMembership
-from app.models.product import Product, Supplier
+from app.models.product import Product, ProductSupplier, Supplier
 from app.models.purchase import Purchase, PurchaseItem
 from app.models.sale import Sale, SaleItem, SaleReturn, SaleReturnItem
 from app.services.briefing import BriefingService
@@ -258,6 +258,19 @@ def create_catalog(db, business):
     db.flush()
     for config in PRODUCTS:
         product = products[config["sku"]]
+        db.add(
+            ProductSupplier(
+                business_id=business.id,
+                product_id=product.id,
+                supplier_id=suppliers[config["supplier"]].id,
+                unit_cost=money(config["cost"]),
+                lead_time_days=config["lead"],
+                minimum_order_quantity=Decimal("1"),
+                pack_size=Decimal("1"),
+                is_preferred=True,
+                is_active=True,
+            )
+        )
         db.add(
             StockBalance(
                 business_id=business.id,

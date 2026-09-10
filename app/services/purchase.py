@@ -5,14 +5,61 @@ from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException, status
 from datetime import datetime, timezone
 
-from app.models.product import Product, Supplier
+from app.models.product import Product, ProductSupplier, Supplier
 from app.models.purchase import Purchase, PurchaseItem
 from app.models.inventory import StockBalance, StockMovement
+from app.services.document_number import DocumentNumberService
 from app.schemas.purchase import PurchaseCreate, PurchaseUpdate, PurchaseStatus
 from app.schemas.stock import MovementType
 
 
 class PurchaseService:
+    @staticmethod
+    def _record_supplier_products(
+        business_id: str,
+        supplier_id: str,
+        product_ids: list[str],
+        products_by_id: dict[str, Product],
+        unit_costs: dict[str, Decimal],
+        db: Session,
+    ) -> None:
+        """Learn supplier options from an owner's purchase selection."""
+        links = db.execute(
+            select(ProductSupplier).where(
+                ProductSupplier.business_id == business_id,
+                ProductSupplier.supplier_id == supplier_id,
+                ProductSupplier.product_id.in_(product_ids),
+            )
+        ).scalars().all()
+        links_by_product = {
+            str(link.product_id): link
+            for link in links
+        }
+
+        for product_id in product_ids:
+            product = products_by_id[product_id]
+            link = links_by_product.get(product_id)
+            is_first_supplier = product.supplier_id is None
+
+            if link is None:
+                link = ProductSupplier(
+                    business_id=business_id,
+                    supplier_id=supplier_id,
+                    product_id=product_id,
+                    lead_time_days=product.lead_time_days,
+                    minimum_order_quantity=Decimal("1"),
+                    pack_size=Decimal("1"),
+                    is_preferred=is_first_supplier,
+                )
+                db.add(link)
+
+            link.unit_cost = unit_costs[product_id]
+            link.is_active = True
+
+            if is_first_supplier:
+                product.supplier_id = supplier_id
+                link.is_preferred = True
+
     @staticmethod
     def order_purchase(
         business_id: str,
@@ -116,6 +163,18 @@ class PurchaseService:
                     detail=f"Products not found: {', '.join(missing)}",
                 )
 
+            PurchaseService._record_supplier_products(
+                business_id=business_id,
+                supplier_id=payload.supplier_id,
+                product_ids=product_ids,
+                products_by_id=products_by_id,
+                unit_costs={
+                    item.product_id: item.unit_cost
+                    for item in payload.items
+                },
+                db=db,
+            )
+
             # Calculate totals
             subtotal = sum(
                 item.quantity * item.unit_cost for item in payload.items
@@ -132,7 +191,12 @@ class PurchaseService:
             purchase = Purchase(
                 business_id=business_id,
                 supplier_id=payload.supplier_id,
-                reference_number=payload.reference_number,
+                reference_number=DocumentNumberService.next_reference_number(
+                    business_id=business_id,
+                    document_type="purchase",
+                    db=db,
+                ),
+                supplier_reference_number=payload.supplier_reference_number,
                 expected_delivery_date=payload.expected_delivery_date,
                 status=PurchaseStatus.DRAFT.value,
                 subtotal=subtotal,
@@ -387,21 +451,7 @@ class PurchaseService:
                     detail="Supplier not found",
                 )
 
-        for field, value in update_data.items():
-            setattr(purchase, field, value)
-
         if items is not None:
-            # Delete old items
-            db.execute(
-                select(PurchaseItem).where(PurchaseItem.purchase_id == purchase.id)
-            )
-            existing_items = db.execute(
-                select(PurchaseItem).where(PurchaseItem.purchase_id == purchase.id)
-            ).scalars().all()
-            for old_item in existing_items:
-                db.delete(old_item)
-            db.flush()
-
             # Validate products
             product_ids = [item["product_id"] for item in items]
             products = db.execute(
@@ -420,9 +470,35 @@ class PurchaseService:
                     detail=f"Products not found: {', '.join(missing)}",
                 )
 
+            PurchaseService._record_supplier_products(
+                business_id=business_id,
+                supplier_id=str(
+                    update_data.get("supplier_id", purchase.supplier_id)
+                ),
+                product_ids=product_ids,
+                products_by_id=products_by_id,
+                unit_costs={
+                    item["product_id"]: item["unit_cost"]
+                    for item in items
+                },
+                db=db,
+            )
+
+            # Replace old items only after every new item passes validation.
+            existing_items = db.execute(
+                select(PurchaseItem).where(
+                    PurchaseItem.purchase_id == purchase.id
+                )
+            ).scalars().all()
+            for old_item in existing_items:
+                db.delete(old_item)
+            db.flush()
+
             subtotal = Decimal("0")
             for item in items:
-                line_total = Decimal(str(item["quantity"])) * Decimal(str(item["unit_cost"]))
+                line_total = Decimal(str(item["quantity"])) * Decimal(
+                    str(item["unit_cost"])
+                )
                 subtotal += line_total
                 purchase_item = PurchaseItem(
                     purchase_id=purchase.id,
@@ -434,7 +510,57 @@ class PurchaseService:
                 db.add(purchase_item)
 
             purchase.subtotal = subtotal
-            purchase.total_amount = subtotal + purchase.tax_amount - purchase.discount_amount
+            tax_amount = update_data.get(
+                "tax_amount",
+                purchase.tax_amount,
+            )
+            discount_amount = update_data.get(
+                "discount_amount",
+                purchase.discount_amount,
+            )
+            purchase.total_amount = (
+                subtotal + tax_amount - discount_amount
+            )
+
+        elif "supplier_id" in update_data:
+            existing_items = db.execute(
+                select(PurchaseItem).where(
+                    PurchaseItem.purchase_id == purchase.id
+                )
+            ).scalars().all()
+            product_ids = [str(item.product_id) for item in existing_items]
+            products = db.execute(
+                select(Product).where(
+                    Product.business_id == business_id,
+                    Product.id.in_(product_ids),
+                    Product.is_active == True,
+                )
+            ).scalars().all()
+            products_by_id = {str(product.id): product for product in products}
+            PurchaseService._record_supplier_products(
+                business_id=business_id,
+                supplier_id=str(update_data["supplier_id"]),
+                product_ids=product_ids,
+                products_by_id=products_by_id,
+                unit_costs={
+                    str(item.product_id): item.unit_cost
+                    for item in existing_items
+                },
+                db=db,
+            )
+
+        for field, value in update_data.items():
+            setattr(purchase, field, value)
+
+        if items is None and (
+            "tax_amount" in update_data
+            or "discount_amount" in update_data
+        ):
+            purchase.total_amount = (
+                purchase.subtotal
+                + purchase.tax_amount
+                - purchase.discount_amount
+            )
 
         db.add(purchase)
         db.commit()
@@ -632,6 +758,7 @@ class PurchaseService:
             "supplier_id": str(purchase.supplier_id),
             "supplier_name": supplier.name if supplier else "Unknown",
             "reference_number": purchase.reference_number,
+            "supplier_reference_number": purchase.supplier_reference_number,
             "status": purchase.status,
             "expected_delivery_date": purchase.expected_delivery_date,
             "items": items,

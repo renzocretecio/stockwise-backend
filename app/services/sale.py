@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from app.models.product import Product
 from app.models.sale import Sale, SaleItem, SaleReturn, SaleReturnItem
 from app.models.inventory import StockBalance, StockMovement
+from app.services.document_number import DocumentNumberService
 from app.schemas.sale import SaleCreate, SaleReturnCreate, SaleStatus
 from app.schemas.stock import MovementType
 
@@ -322,7 +323,11 @@ class SaleService:
             # Create sale
             sale = Sale(
                 business_id=business_id,
-                reference_number=payload.reference_number,
+                reference_number=DocumentNumberService.next_reference_number(
+                    business_id=business_id,
+                    document_type="sale",
+                    db=db,
+                ),
                 status=SaleStatus.COMPLETED.value,
                 payment_method=payload.payment_method.value,
                 subtotal=subtotal,
@@ -364,7 +369,7 @@ class SaleService:
                     unit_cost=product.cost_price,
                     reference_type="sale",
                     reference_id=sale.id,
-                    notes=f"Sold via {payload.reference_number or sale.id}",
+                    notes=f"Sold via {sale.reference_number}",
                     created_by=user_id,
                 )
                 db.add(movement)

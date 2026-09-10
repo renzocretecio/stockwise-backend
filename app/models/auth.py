@@ -19,10 +19,20 @@ class User(Base):
     first_name = Column(String(100), nullable=False)
     last_name = Column(String(100))
     is_active = Column(Boolean, default=True, nullable=False)
+    is_superadmin = Column(Boolean, default=False, nullable=False)
     last_login_at = Column(DateTime(timezone=True))
     pro_trial_used_at = Column(DateTime(timezone=True))
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
 
-    memberships = relationship("BusinessMembership", back_populates="user", cascade="all, delete-orphan")
+    memberships = relationship(
+        "BusinessMembership", back_populates="user", cascade="all, delete-orphan"
+    )
     audit_logs = relationship("AuditLog", back_populates="user")

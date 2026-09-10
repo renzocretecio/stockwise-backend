@@ -58,29 +58,7 @@ def require_permission(permission_key: str):
         context: RequestContext = Depends(get_request_context),
         session: Session = Depends(get_db),
     ) -> RequestContext:
-        role = context.membership.role
-        if (
-            role
-            and getattr(role, "is_system_role", False)
-            and role.name.lower() == "owner"
-        ):
-            return context
-
-        statement = (
-            select(Permission.id)
-            .join(
-                RolePermission,
-                RolePermission.permission_id == Permission.id,
-            )
-            .where(
-                RolePermission.role_id == context.membership.role_id,
-                Permission.key == permission_key,
-            )
-        )
-
-        permission_exists = session.execute(statement).scalar()
-
-        if not permission_exists:
+        if not has_permission(context, permission_key, session):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Missing permission: {permission_key}",
@@ -89,3 +67,32 @@ def require_permission(permission_key: str):
         return context
 
     return dependency
+
+
+def has_permission(
+    context: RequestContext,
+    permission_key: str,
+    session: Session,
+) -> bool:
+    """Return whether the active membership grants a permission."""
+    role = context.membership.role
+    if (
+        role
+        and getattr(role, "is_system_role", False)
+        and role.name.lower() == "owner"
+    ):
+        return True
+
+    statement = (
+        select(Permission.id)
+        .join(
+            RolePermission,
+            RolePermission.permission_id == Permission.id,
+        )
+        .where(
+            RolePermission.role_id == context.membership.role_id,
+            Permission.key == permission_key,
+        )
+    )
+
+    return session.execute(statement).scalar() is not None

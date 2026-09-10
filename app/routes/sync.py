@@ -4,11 +4,20 @@ from sqlalchemy import select
 from sqlmodel import Session
 
 from app.config.database import get_db
-from app.config.permissions import RequestContext, get_request_context, require_permission
+from app.config.permissions import (
+    RequestContext,
+    get_request_context,
+    has_permission,
+    require_permission,
+)
 from app.models.sync_event import SyncEvent
 from app.schemas.sale import SaleCreate
 from app.schemas.stock import StockAdjustmentCreate
-from app.schemas.sync import SyncMutation, SyncMutationResponse
+from app.schemas.sync import (
+    ReferenceDataResponse,
+    SyncMutation,
+    SyncMutationResponse,
+)
 from app.schemas.purchase import PurchaseCreate
 from app.schemas.inventory_count import (
     InventoryCountCreate,
@@ -19,6 +28,7 @@ from app.services.stock import StockService
 from app.services.purchase import PurchaseService
 from app.services.inventory_count import InventoryCountService
 from app.services.entitlements import EntitlementService
+from app.services.reference_data import ReferenceDataService
 
 
 router = APIRouter(prefix="/sync", tags=["sync"])
@@ -29,6 +39,33 @@ PERMISSIONS_BY_TYPE = {
     "physical_count": "inventory.count",
     "purchase": "purchases.create",
 }
+
+
+@router.get(
+    "/reference-data",
+    response_model=ReferenceDataResponse,
+)
+async def get_reference_data(
+    context: RequestContext = Depends(
+        require_permission("products.read")
+    ),
+    db: Session = Depends(get_db),
+):
+    """Return the compact catalog needed by operational forms."""
+    return ReferenceDataService.get_catalog(
+        business_id=str(context.business_id),
+        db=db,
+        include_suppliers=has_permission(
+            context,
+            "suppliers.read",
+            db,
+        ),
+        include_stock=has_permission(
+            context,
+            "inventory.read",
+            db,
+        ),
+    )
 
 
 @router.post(

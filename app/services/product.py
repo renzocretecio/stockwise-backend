@@ -1,5 +1,11 @@
 from sqlmodel import Session, select
-from app.models import Product, Supplier, StockBalance, Category
+from app.models import (
+    Category,
+    Product,
+    ProductSupplier,
+    StockBalance,
+    Supplier,
+)
 from decimal import Decimal
 from fastapi import HTTPException, status
 from app.schemas.product import ProductCreate
@@ -61,14 +67,15 @@ class ProductService:
                 supplier = db.execute(
                     select(Supplier).where(
                         Supplier.id == payload.supplier_id,
-                        Supplier.business_id == business_id
+                        Supplier.business_id == business_id,
+                        Supplier.is_active == True,
                     )
                 ).scalar_one_or_none()
-                
+
                 if not supplier:
                     raise HTTPException(
                         status_code=status.HTTP_404_NOT_FOUND,
-                        detail="Supplier not found"
+                        detail="Supplier not found or is inactive",
                     )
 
             # 4. Explicit Category ID Validation (Industry Standard Refactor)
@@ -119,6 +126,21 @@ class ProductService:
             
             db.add(product)
             db.flush()
+
+            if payload.supplier_id:
+                db.add(
+                    ProductSupplier(
+                        business_id=business_id,
+                        product_id=product.id,
+                        supplier_id=payload.supplier_id,
+                        unit_cost=payload.cost_price,
+                        lead_time_days=payload.lead_time_days,
+                        minimum_order_quantity=Decimal("1"),
+                        pack_size=Decimal("1"),
+                        is_preferred=True,
+                        is_active=True,
+                    )
+                )
             
             # 7. Create companion stock balance entity tracking
             stock_balance = StockBalance(
@@ -272,14 +294,84 @@ class ProductService:
         allowed_fields = {
             "name", "sku", "barcode", "category_id", "brand", "description",
             "unit", "cost_price", "selling_price",
-            "reorder_point", "safety_stock", "lead_time_days", "is_perishable"
+            "reorder_point", "safety_stock", "lead_time_days", "is_perishable",
+            "supplier_id",
         }
+
+        supplier_changed = "supplier_id" in payload
+        new_supplier_id = payload.get("supplier_id")
+        if supplier_changed and new_supplier_id:
+            supplier = db.execute(
+                select(Supplier).where(
+                    Supplier.business_id == business_id,
+                    Supplier.id == new_supplier_id,
+                    Supplier.is_active == True,
+                )
+            ).scalar_one_or_none()
+            if not supplier:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Supplier not found or is inactive",
+                )
         
         for field, value in payload.items():
-            if field in allowed_fields and value is not None:
+            if field in allowed_fields and (
+                value is not None or field == "supplier_id"
+            ):
                 if field == "name":
                     product.normalized_name = value.lower().strip()
+                if field == "supplier_id" and value == "":
+                    value = None
                 setattr(product, field, value)
+
+        if supplier_changed:
+            links = db.execute(
+                select(ProductSupplier).where(
+                    ProductSupplier.business_id == business_id,
+                    ProductSupplier.product_id == product.id,
+                )
+            ).scalars().all()
+            for link in links:
+                link.is_preferred = False
+            db.flush()
+
+            if new_supplier_id:
+                preferred_link = next(
+                    (
+                        link
+                        for link in links
+                        if str(link.supplier_id) == str(new_supplier_id)
+                    ),
+                    None,
+                )
+                if preferred_link is None:
+                    preferred_link = ProductSupplier(
+                        business_id=business_id,
+                        product_id=product.id,
+                        supplier_id=new_supplier_id,
+                        minimum_order_quantity=Decimal("1"),
+                        pack_size=Decimal("1"),
+                    )
+                    db.add(preferred_link)
+
+                preferred_link.unit_cost = product.cost_price
+                preferred_link.lead_time_days = product.lead_time_days
+                preferred_link.is_preferred = True
+                preferred_link.is_active = True
+
+        elif product.supplier_id:
+            preferred_link = db.execute(
+                select(ProductSupplier).where(
+                    ProductSupplier.business_id == business_id,
+                    ProductSupplier.product_id == product.id,
+                    ProductSupplier.supplier_id == product.supplier_id,
+                )
+            ).scalar_one_or_none()
+            if preferred_link:
+                if "cost_price" in payload:
+                    preferred_link.unit_cost = product.cost_price
+                if "lead_time_days" in payload:
+                    preferred_link.lead_time_days = product.lead_time_days
         
         db.add(product)
         db.commit()

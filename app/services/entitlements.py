@@ -193,6 +193,18 @@ class EntitlementService:
             and subscription.plan in PLAN_ENTITLEMENTS
             and subscription.status in ACTIVE_SUBSCRIPTION_STATUSES
         ):
+            period_ends_at = subscription.current_period_ends_at
+            if (
+                subscription.status == "active"
+                and period_ends_at is not None
+                and (
+                    period_ends_at.replace(tzinfo=timezone.utc)
+                    if period_ends_at.tzinfo is None
+                    else period_ends_at
+                )
+                <= datetime.now(timezone.utc)
+            ):
+                return "free"
             return subscription.plan  # type: ignore[return-value]
         return "free"
 
@@ -220,6 +232,11 @@ class EntitlementService:
             return "active"
         if (
             subscription.status == "trialing"
+            and cls.effective_plan(subscription) == "free"
+        ):
+            return "expired"
+        if (
+            subscription.status == "active"
             and cls.effective_plan(subscription) == "free"
         ):
             return "expired"
@@ -456,9 +473,15 @@ class EntitlementService:
             "trial_eligible": trial_eligible,
             "status": cls.effective_status(subscription),
             "provider": subscription.provider if subscription else "manual",
+            "billing_interval": (
+                subscription.billing_interval if subscription else "monthly"
+            ),
             "trial_ends_at": subscription.trial_ends_at if subscription else None,
             "current_period_ends_at": (
                 subscription.current_period_ends_at if subscription else None
+            ),
+            "current_period_started_at": (
+                subscription.current_period_started_at if subscription else None
             ),
             "cancel_at_period_end": (
                 subscription.cancel_at_period_end if subscription else False
@@ -487,8 +510,10 @@ class EntitlementService:
         *,
         provider: str = "manual",
         trial_ends_at=None,
+        current_period_started_at=None,
         current_period_ends_at=None,
         additional_member_seats: int | None = None,
+        billing_interval: str = "monthly",
     ) -> BusinessSubscription:
         business = db.execute(
             select(Business.id).where(Business.id == business_id)
@@ -532,12 +557,14 @@ class EntitlementService:
         subscription.plan = plan
         subscription.status = status_value
         subscription.provider = provider
+        subscription.billing_interval = billing_interval
         subscription.additional_member_seats = seat_count
         if status_value == "trialing" and trial_ends_at:
             subscription.trial_started_at = (
                 subscription.trial_started_at or datetime.now(timezone.utc)
             )
         subscription.trial_ends_at = trial_ends_at
+        subscription.current_period_started_at = current_period_started_at
         subscription.current_period_ends_at = current_period_ends_at
         db.flush()
         return subscription

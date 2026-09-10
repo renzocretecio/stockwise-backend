@@ -1,6 +1,14 @@
-from pydantic import BaseModel, Field, field_validator
-from typing import Optional
 from decimal import Decimal
+from typing import Optional
+
+from pydantic import BaseModel, Field, field_validator
+
+
+def _blank_optional_id_to_none(value: str | None) -> str | None:
+    """Convert blank optional foreign-key values from HTML forms to null."""
+    if isinstance(value, str):
+        return value.strip() or None
+    return value
 
 class PaginationMeta(BaseModel):
     """Pagination metadata"""
@@ -48,7 +56,7 @@ class ProductCreate(BaseModel):
     )
     supplier_id: Optional[str] = Field(
         None,
-        description="Supplier ID (must exist)"
+        description="Optional preferred supplier ID"
     )
     unit: str = Field(
         default="unit",
@@ -88,6 +96,11 @@ class ProductCreate(BaseModel):
         default=False,
         description="Whether product is perishable"
     )
+
+    @field_validator("category_id", "supplier_id", mode="before")
+    @classmethod
+    def blank_optional_ids_to_none(cls, value: str | None) -> str | None:
+        return _blank_optional_id_to_none(value)
     
     @field_validator("selling_price")
     @classmethod
@@ -121,6 +134,7 @@ class ProductCreate(BaseModel):
 class ProductUpdate(BaseModel):
     """Schema for updating a product"""
     name: Optional[str] = Field(None, min_length=1, max_length=200)
+    supplier_id: Optional[str] = Field(None)
     category_id: Optional[str] = Field(None, max_length=100)
     brand: Optional[str] = Field(None, max_length=100)
     description: Optional[str] = None
@@ -131,6 +145,11 @@ class ProductUpdate(BaseModel):
     safety_stock: Optional[Decimal] = Field(None, ge=Decimal("0"), decimal_places=3)
     lead_time_days: Optional[int] = Field(None, ge=1)
     is_perishable: Optional[bool] = None
+
+    @field_validator("category_id", "supplier_id", mode="before")
+    @classmethod
+    def blank_optional_ids_to_none(cls, value: str | None) -> str | None:
+        return _blank_optional_id_to_none(value)
     
     class Config:
         from_attributes = True

@@ -7,6 +7,7 @@ from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from app.config.settings import settings
+from app.core.platform_access import is_superadmin_user
 from app.models import BusinessMembership, User
 from app.utils.security import (
     create_access_token,
@@ -14,11 +15,10 @@ from app.utils.security import (
     verify_password,
 )
 
+
 class AuthService:
     GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
-    GOOGLE_USERINFO_URL = (
-        "https://openidconnect.googleapis.com/v1/userinfo"
-    )
+    GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 
     @staticmethod
     def register(
@@ -35,16 +35,15 @@ class AuthService:
         user = db.query(User).filter(User.email == normalized_email).first()
         if user:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="User already exists"
+                status_code=status.HTTP_400_BAD_REQUEST, detail="User already exists"
             )
-        
+
         hashed_password = hash_password(password)
         new_user = User(
             email=normalized_email,
             password_hash=hashed_password,
             first_name=first_name,
-            last_name=last_name
+            last_name=last_name,
         )
         db.add(new_user)
         if commit:
@@ -52,17 +51,18 @@ class AuthService:
             db.refresh(new_user)
         else:
             db.flush()
-        
+
         token = create_access_token(new_user.id)
         return {
             "user": {
                 "id": str(new_user.id),
                 "email": new_user.email,
-                "first_name": new_user.first_name
+                "first_name": new_user.first_name,
+                "is_superadmin": is_superadmin_user(new_user),
             },
-            "access_token": token
+            "access_token": token,
         }
-    
+
     @staticmethod
     def login(email: str, password: str, db: Session):
         """Login user"""
@@ -70,18 +70,21 @@ class AuthService:
         user = db.query(User).filter(User.email == normalized_email).first()
         if not user or not verify_password(password, user.password_hash):
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid credentials"
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
             )
-        
+
         token = create_access_token(user.id)
-        
+
         # Get businesses user is member of
-        memberships = db.query(BusinessMembership).filter(
-            BusinessMembership.user_id == user.id,
-            BusinessMembership.status == 'active'
-        ).all()
-        
+        memberships = (
+            db.query(BusinessMembership)
+            .filter(
+                BusinessMembership.user_id == user.id,
+                BusinessMembership.status == "active",
+            )
+            .all()
+        )
+
         businesses = [
             {
                 "id": str(m.business_id),
@@ -94,15 +97,16 @@ class AuthService:
             }
             for m in memberships
         ]
-        
+
         return {
             "user": {
                 "id": str(user.id),
                 "email": user.email,
-                "first_name": user.first_name
+                "first_name": user.first_name,
+                "is_superadmin": is_superadmin_user(user),
             },
             "businesses": businesses,
-            "access_token": token
+            "access_token": token,
         }
 
     @staticmethod
@@ -184,9 +188,7 @@ class AuthService:
                 detail="Google did not provide a verified email address",
             )
 
-        user = db.query(User).filter(
-            User.google_subject == subject
-        ).first()
+        user = db.query(User).filter(User.google_subject == subject).first()
         if user is None:
             user = db.query(User).filter(User.email == email).first()
             if user and user.google_subject not in (None, subject):
@@ -228,6 +230,7 @@ class AuthService:
                 "email": user.email,
                 "first_name": user.first_name,
                 "last_name": user.last_name,
+                "is_superadmin": is_superadmin_user(user),
             },
             "access_token": create_access_token(user.id),
             "is_new_user": is_new_user,
@@ -248,7 +251,7 @@ class AuthService:
         user.password_hash = hash_password(new_password)
         db.add(user)
         db.commit()
-    
+
     @staticmethod
     def verify_access_to_business(
         user_id: str,
@@ -256,18 +259,22 @@ class AuthService:
         db: Session,
     ) -> BusinessMembership:
         """Verify user has access to business"""
-        membership = db.query(BusinessMembership).filter(
-            and_(
-                BusinessMembership.user_id == user_id,
-                BusinessMembership.business_id == business_id,
-                BusinessMembership.status == 'active'
+        membership = (
+            db.query(BusinessMembership)
+            .filter(
+                and_(
+                    BusinessMembership.user_id == user_id,
+                    BusinessMembership.business_id == business_id,
+                    BusinessMembership.status == "active",
+                )
             )
-        ).first()
-        
+            .first()
+        )
+
         if not membership:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied to this business"
+                detail="Access denied to this business",
             )
-        
+
         return membership

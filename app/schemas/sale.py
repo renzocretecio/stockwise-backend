@@ -42,7 +42,6 @@ class SaleItemCreate(BaseModel):
 
 class SaleCreate(BaseModel):
     """Schema for creating a new sale"""
-    reference_number: Optional[str] = Field(None, max_length=100)
     items: list[SaleItemCreate] = Field(..., min_length=1)
     payment_method: PaymentMethod = PaymentMethod.CASH
     tax_amount: Decimal = Field(default=Decimal("0"), ge=0)
@@ -60,7 +59,6 @@ class SaleCreate(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
-                "reference_number": "INV-2026-001",
                 "items": [
                     {"product_id": "product-uuid-1", "quantity": "2", "unit_price": "75000.00"},
                     {"product_id": "product-uuid-2", "quantity": "1", "unit_price": "1000.00"}

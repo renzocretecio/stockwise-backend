@@ -10,6 +10,7 @@ class Purchase(Base):
     business_id = Column(UUID_Type(as_uuid=True), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False)
     supplier_id = Column(UUID_Type(as_uuid=True), ForeignKey("suppliers.id", ondelete="SET NULL"))
     reference_number = Column(String(100))
+    supplier_reference_number = Column(String(100))
     status = Column(String(30), default='draft', nullable=False)
     purchase_date = Column(Date, server_default=func.current_date(), nullable=False)
     expected_delivery_date = Column(Date, index=True)

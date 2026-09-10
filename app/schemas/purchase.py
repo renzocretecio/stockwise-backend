@@ -35,7 +35,7 @@ class PurchaseItemCreate(BaseModel):
 class PurchaseCreate(BaseModel):
     """Schema for creating a new purchase draft"""
     supplier_id: str
-    reference_number: Optional[str] = Field(None, max_length=100)
+    supplier_reference_number: Optional[str] = Field(None, max_length=100)
     expected_delivery_date: Optional[date] = None
     items: list[PurchaseItemCreate] = Field(..., min_length=1)
     tax_amount: Decimal = Field(default=Decimal("0"), ge=0)
@@ -54,7 +54,7 @@ class PurchaseCreate(BaseModel):
         json_schema_extra = {
             "example": {
                 "supplier_id": "supplier-uuid",
-                "reference_number": "PO-2026-001",
+                "supplier_reference_number": "INV-2026-001",
                 "items": [
                     {"product_id": "product-uuid-1", "quantity": "50", "unit_cost": "120.00"},
                     {"product_id": "product-uuid-2", "quantity": "20", "unit_cost": "45.50"}
@@ -69,7 +69,7 @@ class PurchaseCreate(BaseModel):
 class PurchaseUpdate(BaseModel):
     """Schema for updating a draft purchase (before receiving)"""
     supplier_id: Optional[str] = None
-    reference_number: Optional[str] = Field(None, max_length=100)
+    supplier_reference_number: Optional[str] = Field(None, max_length=100)
     expected_delivery_date: Optional[date] = None
     items: Optional[list[PurchaseItemCreate]] = Field(None, min_length=1)
     tax_amount: Optional[Decimal] = Field(None, ge=0)
@@ -101,6 +101,7 @@ class PurchaseResponse(BaseModel):
     supplier_id: str
     supplier_name: str
     reference_number: Optional[str] = None
+    supplier_reference_number: Optional[str] = None
     status: str
     expected_delivery_date: Optional[date] = None
     items: list[PurchaseItemResponse]

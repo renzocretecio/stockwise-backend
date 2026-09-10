@@ -31,15 +31,19 @@ class BusinessSubscription(Base):
     plan = Column(String(32), nullable=False, default="free")
     status = Column(String(32), nullable=False, default="active")
     provider = Column(String(32), nullable=False, default="manual")
+    billing_interval = Column(String(16), nullable=False, default="monthly")
     provider_customer_id = Column(String(255))
     provider_subscription_id = Column(String(255), unique=True)
     additional_member_seats = Column(Integer, nullable=False, default=0)
+    current_period_started_at = Column(DateTime(timezone=True))
     current_period_ends_at = Column(DateTime(timezone=True))
     trial_started_at = Column(DateTime(timezone=True))
     trial_ends_at = Column(DateTime(timezone=True))
     cancel_at_period_end = Column(Boolean, nullable=False, default=False)
     cancelled_at = Column(DateTime(timezone=True))
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
     updated_at = Column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -71,10 +75,65 @@ class SubscriptionUsage(Base):
     metric = Column(String(64), nullable=False)
     period_start = Column(Date, nullable=False)
     quantity = Column(Integer, nullable=False, default=0)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
     updated_at = Column(
         DateTime(timezone=True),
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
     )
+
+
+class SubscriptionUpgradeRequest(Base):
+    __tablename__ = "subscription_upgrade_requests"
+
+    id = uuid_column(primary_key=True)
+    business_id = Column(
+        UUID_Type(as_uuid=True),
+        ForeignKey("businesses.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    requested_by = Column(
+        UUID_Type(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    requested_plan = Column(String(32), nullable=False)
+    requested_billing_interval = Column(String(16), nullable=False)
+    requested_additional_member_seats = Column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+    quoted_amount_php = Column(Integer, nullable=False)
+    status = Column(String(32), nullable=False, default="pending", index=True)
+    payment_method = Column(String(64))
+    payment_reference = Column(String(255))
+    payment_submitted_at = Column(DateTime(timezone=True))
+    admin_note = Column(String(500))
+    approved_plan = Column(String(32))
+    approved_billing_interval = Column(String(16))
+    approved_additional_member_seats = Column(Integer)
+    approved_amount_php = Column(Integer)
+    reviewed_by = Column(
+        UUID_Type(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    reviewed_at = Column(DateTime(timezone=True))
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    business = relationship("Business")
+    requested_by_user = relationship("User", foreign_keys=[requested_by])
+    reviewed_by_user = relationship("User", foreign_keys=[reviewed_by])
