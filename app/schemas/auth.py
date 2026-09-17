@@ -1,4 +1,6 @@
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
@@ -93,6 +95,23 @@ class UserProfileUpdate(BaseModel):
     @classmethod
     def normalize_name(cls, value: str | None) -> str | None:
         return value.strip() if value else None
+
+
+class UserAppearanceUpdate(BaseModel):
+    user_id: UUID
+    palette: Literal[
+        "petrol",
+        "graphite",
+        "ocean",
+        "amber",
+        "rose",
+        "custom",
+    ]
+    mode: Literal["light", "dark", "system"]
+    custom_color: str = Field(
+        default="#245564",
+        pattern=r"^#[0-9a-fA-F]{6}$",
+    )
 
 
 class TokenResponse(BaseModel):

@@ -317,10 +317,10 @@ def _validate_date_range(start_date: date, end_date: date) -> None:
             status_code=422,
             detail="start_date must be on or before end_date.",
         )
-    if (end_date - start_date).days + 1 > 365:
+    if (end_date - start_date).days + 1 > 366:
         raise HTTPException(
             status_code=422,
-            detail="The date range cannot exceed 365 days.",
+            detail="The date range cannot exceed 366 days.",
         )
 
 

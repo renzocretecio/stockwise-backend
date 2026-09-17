@@ -1,4 +1,8 @@
 import logging
+from collections import defaultdict, deque
+from math import ceil
+from threading import Lock
+from time import monotonic
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -15,6 +19,7 @@ from app.schemas.auth import (
     LoginRequest,
     SignUpWithBusinessRequest,
     UserProfileUpdate,
+    UserAppearanceUpdate,
 )
 from app.services.auth import AuthService
 from app.services.business import BusinessService
@@ -24,6 +29,54 @@ from app.services.members import MemberService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+APPEARANCE_UPDATE_LIMIT = 10
+APPEARANCE_UPDATE_WINDOW_SECONDS = 60
+_appearance_update_attempts: dict[str, deque[float]] = defaultdict(deque)
+_appearance_update_lock = Lock()
+
+
+def _enforce_appearance_update_limit(user_id: str) -> None:
+    now = monotonic()
+    cutoff = now - APPEARANCE_UPDATE_WINDOW_SECONDS
+
+    with _appearance_update_lock:
+        attempts = _appearance_update_attempts[user_id]
+        while attempts and attempts[0] <= cutoff:
+            attempts.popleft()
+
+        if len(attempts) >= APPEARANCE_UPDATE_LIMIT:
+            retry_after = max(
+                1,
+                ceil(
+                    APPEARANCE_UPDATE_WINDOW_SECONDS
+                    - (now - attempts[0])
+                ),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many appearance updates. Please try again soon.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+        attempts.append(now)
+
+
+def _appearance_response(user: User, *, updated: bool) -> dict:
+    return {
+        "success": True,
+        "updated": updated,
+        "appearance": {
+            "palette": getattr(user, "appearance_palette", None) or "petrol",
+            "mode": getattr(user, "appearance_mode", None) or "system",
+            "custom_color": getattr(
+                user,
+                "appearance_custom_color",
+                None,
+            )
+            or "#245564",
+        },
+    }
 
 
 @router.post("/signup")
@@ -247,9 +300,52 @@ def get_user_profile(
             "last_name": current_user.last_name,
             "is_superadmin": is_superadmin_user(current_user),
             "permissions": sorted(user_permissions),
+            "appearance": {
+                "palette": getattr(current_user, "appearance_palette", None)
+                or "petrol",
+                "mode": getattr(current_user, "appearance_mode", None)
+                or "system",
+                "custom_color": getattr(
+                    current_user,
+                    "appearance_custom_color",
+                    None,
+                )
+                or "#245564",
+            },
         },
         "businesses": business_payload,
     }
+
+
+@router.patch("/me/appearance")
+def update_user_appearance(
+    payload: UserAppearanceUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if str(payload.user_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Account changed")
+
+    unchanged = (
+        (getattr(current_user, "appearance_palette", None) or "petrol")
+        == payload.palette
+        and (getattr(current_user, "appearance_mode", None) or "system")
+        == payload.mode
+        and (
+            getattr(current_user, "appearance_custom_color", None)
+            or "#245564"
+        )
+        == payload.custom_color
+    )
+    if unchanged:
+        return _appearance_response(current_user, updated=False)
+
+    _enforce_appearance_update_limit(str(current_user.id))
+    current_user.appearance_palette = payload.palette
+    current_user.appearance_mode = payload.mode
+    current_user.appearance_custom_color = payload.custom_color
+    db.commit()
+    return _appearance_response(current_user, updated=True)
 
 
 @router.patch("/me")
