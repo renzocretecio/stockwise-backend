@@ -24,7 +24,7 @@ class User(Base):
         String(20), default="petrol", server_default="petrol", nullable=False
     )
     appearance_mode = Column(
-        String(10), default="system", server_default="system", nullable=False
+        String(10), default="dark", server_default="dark", nullable=False
     )
     appearance_custom_color = Column(String(7), nullable=True)
     last_login_at = Column(DateTime(timezone=True))

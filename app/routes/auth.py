@@ -68,13 +68,13 @@ def _appearance_response(user: User, *, updated: bool) -> dict:
         "updated": updated,
         "appearance": {
             "palette": getattr(user, "appearance_palette", None) or "petrol",
-            "mode": getattr(user, "appearance_mode", None) or "system",
+            "mode": getattr(user, "appearance_mode", None) or "dark",
             "custom_color": getattr(
                 user,
                 "appearance_custom_color",
                 None,
             )
-            or "#245564",
+            or "#f3bc16",
         },
     }
 
@@ -304,13 +304,13 @@ def get_user_profile(
                 "palette": getattr(current_user, "appearance_palette", None)
                 or "petrol",
                 "mode": getattr(current_user, "appearance_mode", None)
-                or "system",
+                or "dark",
                 "custom_color": getattr(
                     current_user,
                     "appearance_custom_color",
                     None,
                 )
-                or "#245564",
+                or "#f3bc16",
             },
         },
         "businesses": business_payload,
@@ -329,11 +329,11 @@ def update_user_appearance(
     unchanged = (
         (getattr(current_user, "appearance_palette", None) or "petrol")
         == payload.palette
-        and (getattr(current_user, "appearance_mode", None) or "system")
+        and (getattr(current_user, "appearance_mode", None) or "dark")
         == payload.mode
         and (
             getattr(current_user, "appearance_custom_color", None)
-            or "#245564"
+            or "#f3bc16"
         )
         == payload.custom_color
     )
