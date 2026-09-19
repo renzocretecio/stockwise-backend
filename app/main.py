@@ -16,6 +16,7 @@ from app.routes import (
     stock,
     businesses,
     product_imports,
+    supplier_imports,
     inventory,
     inventory_counts,
     reports,
@@ -54,6 +55,11 @@ app.include_router(stock.router, prefix=settings.API_V1_STR, tags=["stock"])
 app.include_router(businesses.router, prefix=settings.API_V1_STR, tags=["businesses"])
 app.include_router(
     product_imports.router, prefix=settings.API_V1_STR, tags=["product import"]
+)
+app.include_router(
+    supplier_imports.router,
+    prefix=settings.API_V1_STR,
+    tags=["supplier import"],
 )
 app.include_router(categories.router, prefix=settings.API_V1_STR, tags=["categories"])
 app.include_router(inventory.router, prefix=settings.API_V1_STR, tags=["inventory"])

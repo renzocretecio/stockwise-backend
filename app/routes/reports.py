@@ -235,7 +235,7 @@ async def export_report(
     )
     db.commit()
 
-    filename = f"stockwise-{report_name}-{generated_at.date().isoformat()}.csv"
+    filename = f"kitastock-{report_name}-{generated_at.date().isoformat()}.csv"
     return Response(
         content=content.encode("utf-8"),
         media_type="text/csv",

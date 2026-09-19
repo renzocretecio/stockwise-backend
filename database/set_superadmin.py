@@ -1,4 +1,4 @@
-"""Grant or revoke StockWise platform superadmin access.
+"""Grant or revoke KitaStock platform superadmin access.
 
 Usage:
     PYTHONPATH=. venv/bin/python database/set_superadmin.py --email you@example.com

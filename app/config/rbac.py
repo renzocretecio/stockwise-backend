@@ -1,4 +1,4 @@
-"""Canonical StockWise roles and permissions.
+"""Canonical KitaStock roles and permissions.
 
 Permissions are global identifiers. Roles are created per business so a user
 can have a different role in every business they belong to.

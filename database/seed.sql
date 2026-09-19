@@ -9,7 +9,7 @@ INSERT INTO businesses (
     id, name, slug, email, phone, address, currency_code, timezone
 ) VALUES (
     '00000000-0000-0000-0000-000000000001',
-    'Stockwise Demo Store',
+    'KitaStock Demo Store',
     'stockwise-demo',
     'demo@stockwise.local',
     '+63 900 000 0000',

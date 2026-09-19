@@ -47,7 +47,7 @@ def test_email_contains_ai_and_deterministic_sections(monkeypatch):
     assert "AI EXECUTIVE SUMMARY" in text
     assert "THIS WEEK AT A GLANCE" in text
     assert "PHP 186,420.00" in text
-    assert "OPEN STOCKWISE" in text
+    assert "OPEN KITASTOCK" in text
     assert "Aug 31, 2026 to Sep 06, 2026" in text
     assert "Aug 31, 2026 to Sep 06, 2026" in html
     assert "https://app.example" in html
@@ -90,7 +90,7 @@ async def test_weekly_ai_receives_only_owner_summary_facts(monkeypatch):
 
     async def fake_generate(self, instruction, context, schema):
         captured.update({"instruction": instruction, "context": context, "schema": schema})
-        return json.dumps({"summary": "Sales were steady. Inventory needs review. Actions are listed. Owners can open Stockwise."})
+        return json.dumps({"summary": "Sales were steady. Inventory needs review. Actions are listed. Owners can open KitaStock."})
 
     monkeypatch.setattr(GroqCommunicationService, "_generate", fake_generate)
     monkeypatch.setattr(weekly_owner_summary, "communication_enabled", lambda: True)

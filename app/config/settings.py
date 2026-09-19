@@ -5,7 +5,7 @@ from typing import Optional
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = Field("stockwise API", env="APP_NAME")
+    PROJECT_NAME: str = Field("KitaStock API", env="APP_NAME")
     API_V1_STR: str = Field("/api/v1", env="API_PREFIX")
 
     # Server
@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_DAYS: int = 7
 
-    # Google OpenID Connect. StockWise uses Google only for authentication,
+    # Google OpenID Connect. KitaStock uses Google only for authentication,
     # so provider access and refresh tokens are never persisted.
     GOOGLE_CLIENT_ID: Optional[str] = None
     GOOGLE_CLIENT_SECRET: Optional[str] = None

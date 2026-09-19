@@ -243,7 +243,7 @@ def create_catalog(db, business):
             barcode=f"899{len(products) + 1:09d}",
             name=config["name"],
             normalized_name=config["name"].casefold(),
-            description="Comprehensive Stockwise demo product",
+            description="Comprehensive KitaStock demo product",
             brand="Demo Brand",
             unit="unit",
             cost_price=money(config["cost"]),

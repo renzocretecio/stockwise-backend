@@ -725,7 +725,7 @@ class MemberService:
         if not settings.SMTP_HOST or not settings.SMTP_FROM_EMAIL:
             return
         message = EmailMessage()
-        message["Subject"] = f"You're invited to {business_name} on StockWise"
+        message["Subject"] = f"You're invited to {business_name} on KitaStock"
         message["From"] = settings.SMTP_FROM_EMAIL
         message["To"] = recipient
         message.set_content(
