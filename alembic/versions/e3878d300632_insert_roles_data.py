@@ -21,22 +21,26 @@ def upgrade() -> None:
     op.execute(
         """
         INSERT INTO roles (
+            id,
             name,
             description,
             is_system_role
         )
         VALUES
         (
+            gen_random_uuid(),
             'owner',
             'Full access to the business',
             TRUE
         ),
         (
+            gen_random_uuid(),
             'manager',
             'Inventory, sales, purchases, suppliers, and reports',
             TRUE
         ),
         (
+            gen_random_uuid(),
             'clerk',
             'Sales and limited inventory access',
             TRUE
