@@ -24,6 +24,7 @@ from app.models.subscription import (
     SubscriptionUsage,
 )
 from app.models.invitation import BusinessInvitation
+from app.models.permission import Permission, RolePermission
 
 __all__ = [
     "Base",
@@ -57,4 +58,6 @@ __all__ = [
     "SubscriptionUpgradeRequest",
     "SubscriptionUsage",
     "BusinessInvitation",
+    "Permission",
+    "RolePermission",
 ]

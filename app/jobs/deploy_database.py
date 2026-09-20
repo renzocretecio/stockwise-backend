@@ -12,7 +12,6 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import inspect
-from sqlmodel import SQLModel
 
 from app.config.rbac import PERMISSIONS
 from app.config.database import SessionLocal, engine
@@ -72,7 +71,6 @@ def seed_rbac_data() -> None:
 def bootstrap_database() -> None:
     """Create the current schema and its required reference data once."""
     Base.metadata.create_all(bind=engine)
-    SQLModel.metadata.create_all(bind=engine)
     seed_rbac_data()
 
 

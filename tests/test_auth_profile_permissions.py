@@ -35,12 +35,9 @@ def test_get_user_profile_includes_permissions():
     )
 
     def fake_query(model):
-        if (
-            model
-            == __import__(
-                "app.models", fromlist=["BusinessMembership"]
-            ).BusinessMembership
-        ):
+        if model is __import__(
+            "app.models", fromlist=["BusinessMembership"]
+        ).BusinessMembership:
             return SimpleNamespace(
                 filter=lambda *args, **kwargs: SimpleNamespace(
                     all=lambda: [membership]
