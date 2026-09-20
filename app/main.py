@@ -1,8 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config.settings import settings
-from app.config.database import engine
-from app.models import Base
 from app.middleware.idempotency import idempotency_middleware
 from app.routes import (
     auth,
@@ -27,8 +25,6 @@ from app.routes import (
     billing,
     members,
 )
-
-Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title=settings.PROJECT_NAME, version="0.1.0")
 app.middleware("http")(idempotency_middleware)
