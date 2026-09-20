@@ -1,8 +1,6 @@
 import hashlib
 import secrets
-import smtplib
 from datetime import datetime, timedelta, timezone
-from email.message import EmailMessage
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -19,6 +17,7 @@ from app.models import (
     User,
 )
 from app.models.permission import Permission, RolePermission
+from app.services.email import EmailService
 from app.services.entitlements import EntitlementService
 
 
@@ -29,7 +28,7 @@ OWNER_ONLY_PERMISSIONS = {"billing.manage", "business.update"}
 class MemberService:
     @staticmethod
     def email_is_configured() -> bool:
-        return bool(settings.SMTP_HOST and settings.SMTP_FROM_EMAIL)
+        return EmailService.is_configured()
 
     @staticmethod
     def token_hash(token: str) -> str:
@@ -146,7 +145,9 @@ class MemberService:
         invited_by: UUID,
         db: Session,
     ) -> tuple[BusinessInvitation, str]:
-        db.query(Business).filter(Business.id == business_id).with_for_update().one()
+        db.query(Business).filter(
+            Business.id == business_id
+        ).with_for_update().one()
         role = MemberService.require_assignable_role(
             business_id,
             role_id,
@@ -179,7 +180,8 @@ class MemberService:
             .first()
         )
         is_reserved = bool(
-            invitation and not MemberService.is_expired(invitation.expires_at, now)
+            invitation
+            and not MemberService.is_expired(invitation.expires_at, now)
         )
         if not is_reserved:
             EntitlementService.require_member_capacity(
@@ -682,7 +684,8 @@ class MemberService:
         invitation = (
             db.query(BusinessInvitation)
             .filter(
-                BusinessInvitation.token_hash == MemberService.token_hash(token),
+                BusinessInvitation.token_hash
+                == MemberService.token_hash(token),
                 BusinessInvitation.status == "pending",
             )
             .first()
@@ -713,7 +716,9 @@ class MemberService:
 
     @staticmethod
     def invitation_url(token: str) -> str:
-        return f"{settings.APP_URL.rstrip('/')}/invitations/accept?token={token}"
+        return (
+            f"{settings.APP_URL.rstrip('/')}/invitations/accept?token={token}"
+        )
 
     @staticmethod
     def send_invitation_email(
@@ -722,25 +727,14 @@ class MemberService:
         role_name: str,
         accept_url: str,
     ) -> None:
-        if not settings.SMTP_HOST or not settings.SMTP_FROM_EMAIL:
+        if not EmailService.is_configured():
             return
-        message = EmailMessage()
-        message["Subject"] = f"You're invited to {business_name} on KitaStock"
-        message["From"] = settings.SMTP_FROM_EMAIL
-        message["To"] = recipient
-        message.set_content(
+        EmailService.send(
+            [recipient],
+            f"You're invited to {business_name} on KitaStock",
             f"You've been invited as {role_name}.\n\n"
-            f"Accept within {INVITATION_LIFETIME_DAYS} days:\n{accept_url}"
+            f"Accept within {INVITATION_LIFETIME_DAYS} days:\n{accept_url}",
         )
-        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
-            if settings.SMTP_USE_TLS:
-                server.starttls()
-            if settings.SMTP_USERNAME:
-                server.login(
-                    settings.SMTP_USERNAME,
-                    settings.SMTP_PASSWORD or "",
-                )
-            server.send_message(message)
 
     @staticmethod
     def add_audit_log(

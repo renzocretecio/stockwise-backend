@@ -1,0 +1,31 @@
+name: Weekly owner summaries
+
+on:
+    schedule:
+        - cron: "17 * * * *"
+    workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+    group: weekly-owner-summaries
+    cancel-in-progress: false
+
+jobs:
+    trigger:
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        steps:
+            - name: Trigger scheduled summaries
+              env:
+                  WEEKLY_SUMMARY_JOB_URL: ${{ secrets.WEEKLY_SUMMARY_JOB_URL }}
+                  CRON_SECRET: ${{ secrets.CRON_SECRET }}
+              run: |
+                  curl \
+                    --fail-with-body \
+                    --retry 3 \
+                    --retry-all-errors \
+                    --max-time 180 \
+                    --request POST \
+                    --header "Authorization: Bearer ${CRON_SECRET}" \
+                    "${WEEKLY_SUMMARY_JOB_URL}"

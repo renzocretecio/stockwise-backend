@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from enum import IntEnum
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -53,6 +53,12 @@ class WeeklyOwnerSummarySettingsPayload(BaseModel):
 
 class WeeklyOwnerSummarySettingsResponse(WeeklyOwnerSummarySettingsPayload):
     business_id: str
+    last_sent_period_end: date | None = None
+    last_attempted_at: datetime | None = None
+    last_sent_at: datetime | None = None
+    last_delivery_status: str | None = None
+    last_delivery_error: str | None = None
+    next_attempt_at: datetime | None = None
 
 
 class WeeklyOwnerSummaryResponse(BaseModel):

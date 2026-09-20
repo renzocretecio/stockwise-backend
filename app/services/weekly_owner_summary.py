@@ -1,9 +1,8 @@
 import logging
-import smtplib
-from datetime import date, datetime, timedelta
-from email.message import EmailMessage
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from html import escape
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 from sqlmodel import Session
@@ -11,8 +10,13 @@ from sqlmodel import Session
 from app.config.settings import settings
 from app.models.business import Business
 from app.models.notification import WeeklyOwnerSummarySettings
-from app.services.communication import GroqCommunicationService, communication_enabled
+from app.services.communication import (
+    GroqCommunicationService,
+    communication_enabled,
+)
 from app.services.dashboard import DashboardService
+from app.services.email import EmailService
+from app.services.entitlements import EntitlementService
 from app.services.intelligence import IntelligenceService
 from app.services.report import ReportService
 
@@ -27,6 +31,18 @@ SECTION_KEYS = {
     "inventory_anomalies",
     "supplier_issues",
 }
+
+RETRY_BASE_MINUTES = 5
+RETRY_MAX_MINUTES = 360
+
+
+@dataclass
+class WeeklySummaryRunResult:
+    due: int = 0
+    sent: int = 0
+    failed: int = 0
+    skipped_not_entitled: int = 0
+    would_send: int = 0
 
 
 class WeeklyOwnerSummaryService:
@@ -80,7 +96,12 @@ class WeeklyOwnerSummaryService:
             str(business.id), 7, db, period_start, period_end, business.timezone
         )
         previous_sales = ReportService.get_sales_report(
-            str(business.id), 7, db, previous_start, previous_end, business.timezone
+            str(business.id),
+            7,
+            db,
+            previous_start,
+            previous_end,
+            business.timezone,
         )
         dashboard = DashboardService.get_dashboard(str(business.id), db)
         inventory = ReportService.get_inventory_report(str(business.id), db)
@@ -108,7 +129,9 @@ class WeeklyOwnerSummaryService:
                 "action": item.get("recommended_action")
                 or item.get("suggested_action")
                 or item.get("detail"),
-                "source": item.get("rule_id") or item.get("anomaly_type") or item.get("classification"),
+                "source": item.get("rule_id")
+                or item.get("anomaly_type")
+                or item.get("classification"),
             }
             for item in attention[:10]
         ]
@@ -122,7 +145,9 @@ class WeeklyOwnerSummaryService:
             "top_seller": top_seller,
             "low_stock_count": inventory["summary"]["low_stock_count"],
             "stockout_risk_count": len(dashboard["forecasts"]),
-            "dead_stock_value": dashboard["inventory_efficiency"]["dead_stock_value"],
+            "dead_stock_value": dashboard["inventory_efficiency"][
+                "dead_stock_value"
+            ],
             "anomaly_count": len(dashboard["anomalies"]),
             "priority_actions": actions,
             "kpis": {
@@ -131,7 +156,9 @@ class WeeklyOwnerSummaryService:
                 "inventory_value": inventory["summary"]["total_stock_value"],
                 "low_stock_count": inventory["summary"]["low_stock_count"],
                 "stockout_risk_count": len(dashboard["forecasts"]),
-                "dead_stock_value": dashboard["inventory_efficiency"]["dead_stock_value"],
+                "dead_stock_value": dashboard["inventory_efficiency"][
+                    "dead_stock_value"
+                ],
                 "anomaly_count": len(dashboard["anomalies"]),
             },
             "needs_attention": attention[:10],
@@ -144,9 +171,16 @@ class WeeklyOwnerSummaryService:
         facts = {
             key: data[key]
             for key in (
-                "period", "sales", "sales_change_pct", "gross_profit",
-                "top_seller", "low_stock_count", "stockout_risk_count",
-                "dead_stock_value", "anomaly_count", "priority_actions",
+                "period",
+                "sales",
+                "sales_change_pct",
+                "gross_profit",
+                "top_seller",
+                "low_stock_count",
+                "stockout_risk_count",
+                "dead_stock_value",
+                "anomaly_count",
+                "priority_actions",
             )
         }
         facts["period"] = WeeklyOwnerSummaryService._format_period_for_ai(
@@ -192,9 +226,7 @@ class WeeklyOwnerSummaryService:
         currency = business.currency_code or "PHP"
         business_name = business.name
         period = data["period"]
-        display_period = WeeklyOwnerSummaryService._format_period_for_ai(
-            period
-        )
+        display_period = WeeklyOwnerSummaryService._format_period_for_ai(period)
         sections = settings_row.included_sections or []
 
         subject_title = f"Weekly Owner Summary | {business_name}"
@@ -692,7 +724,9 @@ class WeeklyOwnerSummaryService:
         settings_row: WeeklyOwnerSummarySettings,
         db: Session,
     ) -> dict:
-        data = await WeeklyOwnerSummaryService.preview(business, settings_row, db)
+        data = await WeeklyOwnerSummaryService.preview(
+            business, settings_row, db
+        )
         text, html = WeeklyOwnerSummaryService.render_email(
             business, data, settings_row
         )
@@ -702,72 +736,255 @@ class WeeklyOwnerSummaryService:
             text,
             html,
         )
-        settings_row.last_sent_period_end = data["period_end"].isoformat()
-        db.add(settings_row)
-        db.commit()
+        WeeklyOwnerSummaryService._record_success(
+            settings_row,
+            data["period_end"],
+            datetime.now(timezone.utc),
+            db,
+        )
         return data
 
     @staticmethod
     def due_businesses(
         now: datetime, db: Session
-    ) -> list[tuple[Business, WeeklyOwnerSummarySettings]]:
+    ) -> list[tuple[Business, WeeklyOwnerSummarySettings, date]]:
+        utc_now = WeeklyOwnerSummaryService._as_utc(now)
         rows = db.execute(
-            select(Business, WeeklyOwnerSummarySettings).join(
+            select(Business, WeeklyOwnerSummarySettings)
+            .join(
                 WeeklyOwnerSummarySettings,
                 WeeklyOwnerSummarySettings.business_id == Business.id,
-            ).where(
+            )
+            .where(
                 Business.is_active.is_(True),
                 WeeklyOwnerSummarySettings.enabled.is_(True),
-                WeeklyOwnerSummarySettings.send_weekday == now.weekday(),
             )
         ).all()
-        return [(business, row) for business, row in rows]
+        due = []
+        for business, row in rows:
+            try:
+                period_end = WeeklyOwnerSummaryService._due_period_end(
+                    business,
+                    row,
+                    utc_now,
+                )
+            except ZoneInfoNotFoundError:
+                logger.error(
+                    "Weekly summary skipped for business %s: invalid "
+                    "timezone %s",
+                    business.id,
+                    business.timezone,
+                )
+                continue
+            if period_end is not None:
+                due.append((business, row, period_end))
+        return due
 
     @staticmethod
-    async def send_due(now: datetime, db: Session) -> int:
-        """Send completed weekly periods for a scheduler or worker process."""
-        sent = 0
-        for business, row in WeeklyOwnerSummaryService.due_businesses(now, db):
-            local_now = now.astimezone(ZoneInfo(business.timezone))
-            if (
-                local_now.hour != row.send_hour
-                or local_now.minute != row.send_minute
-            ):
-                continue
-            period_end = local_now.date() - timedelta(days=1)
-            if row.last_sent_period_end == period_end.isoformat():
-                continue
-            data = WeeklyOwnerSummaryService.build_data(business, db, period_end)
-            data = await WeeklyOwnerSummaryService.add_ai_summary(data)
-            text, html = WeeklyOwnerSummaryService.render_email(
-                business, data, row
-            )
-            WeeklyOwnerSummaryService.send_email(
-                row.recipients,
-                f"Weekly Owner Summary | {business.name}",
-                text,
-                html,
-            )
-            row.last_sent_period_end = period_end.isoformat()
-            db.add(row)
-            db.commit()
-            sent += 1
-        return sent
+    def _as_utc(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
     @staticmethod
-    def send_email(recipients: list[str], subject: str, text: str, html: str) -> None:
-        print(f"Sending email to {recipients} with subject '{subject}'")
-        if not settings.SMTP_HOST or not settings.SMTP_FROM_EMAIL:
-            raise RuntimeError("SMTP_HOST and SMTP_FROM_EMAIL are required")
-        message = EmailMessage()
-        message["Subject"] = subject
-        message["From"] = settings.SMTP_FROM_EMAIL
-        message["To"] = ", ".join(recipients)
-        message.set_content(text)
-        message.add_alternative(html, subtype="html")
-        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
-            if settings.SMTP_USE_TLS:
-                server.starttls()
-            if settings.SMTP_USERNAME:
-                server.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD or "")
-            server.send_message(message)
+    def _due_period_end(
+        business: Business,
+        row: WeeklyOwnerSummarySettings,
+        now: datetime,
+    ) -> date | None:
+        utc_now = WeeklyOwnerSummaryService._as_utc(now)
+        local_now = utc_now.astimezone(ZoneInfo(business.timezone))
+        if local_now.weekday() != row.send_weekday:
+            return None
+        scheduled = local_now.replace(
+            hour=row.send_hour,
+            minute=row.send_minute,
+            second=0,
+            microsecond=0,
+        )
+        if local_now < scheduled:
+            return None
+        period_end = local_now.date() - timedelta(days=1)
+        if row.last_sent_period_end == period_end.isoformat():
+            return None
+        next_attempt = row.next_attempt_at
+        if next_attempt is not None:
+            if next_attempt.tzinfo is None:
+                next_attempt = next_attempt.replace(tzinfo=timezone.utc)
+            if next_attempt > utc_now:
+                return None
+        return period_end
+
+    @staticmethod
+    async def send_due(
+        now: datetime,
+        db: Session,
+        *,
+        dry_run: bool = False,
+    ) -> WeeklySummaryRunResult:
+        """Send every due summary while isolating failures by business."""
+        utc_now = WeeklyOwnerSummaryService._as_utc(now)
+        due = WeeklyOwnerSummaryService.due_businesses(utc_now, db)
+        result = WeeklySummaryRunResult(due=len(due))
+        for business, row, period_end in due:
+            try:
+                (
+                    _,
+                    entitlements,
+                    _,
+                ) = EntitlementService.entitlements_for_business(
+                    str(business.id),
+                    db,
+                )
+            except Exception:
+                db.rollback()
+                logger.exception(
+                    "Weekly summary entitlement check failed for business %s",
+                    business.id,
+                )
+                result.failed += 1
+                continue
+            if not entitlements.weekly_owner_summary:
+                result.skipped_not_entitled += 1
+                continue
+            if dry_run:
+                result.would_send += 1
+                continue
+
+            try:
+                WeeklyOwnerSummaryService._record_attempt(
+                    row,
+                    period_end,
+                    utc_now,
+                    db,
+                )
+                data = WeeklyOwnerSummaryService.build_data(
+                    business,
+                    db,
+                    period_end,
+                )
+                data = await WeeklyOwnerSummaryService.add_ai_summary(data)
+                text, html = WeeklyOwnerSummaryService.render_email(
+                    business,
+                    data,
+                    row,
+                )
+                WeeklyOwnerSummaryService.send_email(
+                    row.recipients,
+                    f"Weekly Owner Summary | {business.name}",
+                    text,
+                    html,
+                )
+                WeeklyOwnerSummaryService._record_success(
+                    row,
+                    period_end,
+                    utc_now,
+                    db,
+                )
+            except Exception as error:
+                db.rollback()
+                try:
+                    WeeklyOwnerSummaryService._record_failure(
+                        row,
+                        period_end,
+                        utc_now,
+                        error,
+                        db,
+                    )
+                except Exception:
+                    db.rollback()
+                    logger.exception(
+                        "Could not record weekly summary failure for "
+                        "business %s",
+                        business.id,
+                    )
+                logger.exception(
+                    "Weekly summary delivery failed for business %s",
+                    business.id,
+                )
+                result.failed += 1
+                continue
+
+            logger.info(
+                "Weekly summary sent for business %s, period ending %s",
+                business.id,
+                period_end.isoformat(),
+            )
+            result.sent += 1
+        return result
+
+    @staticmethod
+    def _record_attempt(
+        row: WeeklyOwnerSummarySettings,
+        period_end: date,
+        now: datetime,
+        db: Session,
+    ) -> None:
+        period_key = period_end.isoformat()
+        if row.last_attempt_period_end != period_key:
+            row.consecutive_failures = 0
+        row.last_attempt_period_end = period_key
+        row.last_attempted_at = now
+        row.last_delivery_status = "sending"
+        row.last_delivery_error = None
+        row.next_attempt_at = None
+        db.add(row)
+        db.commit()
+
+    @staticmethod
+    def _record_success(
+        row: WeeklyOwnerSummarySettings,
+        period_end: date,
+        now: datetime,
+        db: Session,
+    ) -> None:
+        tracked = db.get(WeeklyOwnerSummarySettings, row.id) or row
+        tracked.last_sent_period_end = period_end.isoformat()
+        tracked.last_sent_at = now
+        tracked.last_delivery_status = "sent"
+        tracked.last_delivery_error = None
+        tracked.consecutive_failures = 0
+        tracked.next_attempt_at = None
+        db.add(tracked)
+        db.commit()
+
+    @staticmethod
+    def _record_failure(
+        row: WeeklyOwnerSummarySettings,
+        period_end: date,
+        now: datetime,
+        error: Exception,
+        db: Session,
+    ) -> None:
+        db.rollback()
+        tracked = db.get(WeeklyOwnerSummarySettings, row.id) or row
+        period_key = period_end.isoformat()
+        previous_failures = (
+            tracked.consecutive_failures or 0
+            if tracked.last_attempt_period_end == period_key
+            else 0
+        )
+        failures = previous_failures + 1
+        delay = min(
+            RETRY_BASE_MINUTES * (2 ** (failures - 1)),
+            RETRY_MAX_MINUTES,
+        )
+        tracked.last_attempt_period_end = period_key
+        tracked.last_attempted_at = now
+        tracked.last_delivery_status = "failed"
+        tracked.last_delivery_error = (f"{type(error).__name__}: {error}")[
+            :1000
+        ]
+        tracked.consecutive_failures = failures
+        tracked.next_attempt_at = now + timedelta(minutes=delay)
+        db.add(tracked)
+        db.commit()
+
+    @staticmethod
+    def send_email(
+        recipients: list[str],
+        subject: str,
+        text: str,
+        html: str,
+    ) -> None:
+        EmailService.send(recipients, subject, text, html)

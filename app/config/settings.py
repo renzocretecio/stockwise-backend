@@ -4,6 +4,7 @@ from pydantic import AliasChoices, Field
 from typing import Optional
 from pydantic_settings import BaseSettings
 
+
 class Settings(BaseSettings):
     PROJECT_NAME: str = Field("KitaStock API", env="APP_NAME")
     API_V1_STR: str = Field("/api/v1", env="API_PREFIX")
@@ -12,10 +13,14 @@ class Settings(BaseSettings):
     PORT: int = 3001
     HOST: str = "0.0.0.0"
     ENV: str = "development"
-    
+
     # Database
     DATABASE_URL: str
-    
+    DATABASE_POOL_SIZE: int = Field(default=3, ge=1, le=10)
+    DATABASE_MAX_OVERFLOW: int = Field(default=2, ge=0, le=10)
+    DATABASE_POOL_TIMEOUT_SECONDS: int = Field(default=30, ge=1)
+    DATABASE_POOL_RECYCLE_SECONDS: int = Field(default=1800, ge=1)
+
     # JWT
     JWT_SECRET: str
     JWT_ALGORITHM: str = "HS256"
@@ -27,7 +32,7 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_SECRET: Optional[str] = None
     GOOGLE_REDIRECT_URI: Optional[str] = None
     GOOGLE_OAUTH_TIMEOUT_SECONDS: float = 10.0
-    
+
     # LLM
     NARRATOR_PROVIDER: str = "template"
     GROQ_API_KEY: Optional[str] = None
@@ -39,21 +44,25 @@ class Settings(BaseSettings):
     BILLING_ADMIN_TOKEN: Optional[str] = None
     BILLING_ADMIN_EMAILS: str = ""
 
-    # Weekly owner email
+    # Email delivery
     APP_URL: str = "http://localhost:3000"
-    SMTP_HOST: Optional[str] = None
-    SMTP_PORT: int = 587
-    SMTP_USERNAME: Optional[str] = None
-    SMTP_PASSWORD: Optional[str] = None
-    SMTP_FROM_EMAIL: Optional[str] = Field(
+    BREVO_API_KEY: Optional[str] = None
+    BREVO_SENDER_EMAIL: Optional[str] = Field(
         default=None,
-        validation_alias=AliasChoices("SMTP_FROM_EMAIL", "SMTP_FROM"),
+        validation_alias=AliasChoices(
+            "BREVO_SENDER_EMAIL",
+            "BREVO_FROM_EMAIL",
+            "EMAIL_FROM",
+        ),
     )
-    SMTP_USE_TLS: bool = True
-    
-    # Redis
-    REDIS_URL: str = "redis://localhost:6379"
-    
+    BREVO_SENDER_NAME: str = "KitaStock"
+    BREVO_API_URL: str = "https://api.brevo.com/v3/smtp/email"
+    BREVO_API_TIMEOUT_SECONDS: float = 15.0
+
+    # Scheduled jobs
+    CRON_SECRET: Optional[str] = None
+    LOG_LEVEL: str = "INFO"
+
     # Frontend
     ALLOWED_ORIGINS: str = "http://localhost:3000"
 
@@ -62,8 +71,10 @@ class Settings(BaseSettings):
         "extra": "ignore",
     }
 
+
 @lru_cache()
 def get_settings() -> Settings:
     return Settings()
+
 
 settings = get_settings()
