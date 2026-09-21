@@ -25,6 +25,12 @@ from app.models.subscription import (
 )
 from app.models.invitation import BusinessInvitation
 from app.models.permission import Permission, RolePermission
+from app.models.storefront import (
+    PublicStore,
+    StoreOrder,
+    StoreOrderItem,
+    StoreProduct,
+)
 
 __all__ = [
     "Base",
@@ -60,4 +66,8 @@ __all__ = [
     "BusinessInvitation",
     "Permission",
     "RolePermission",
+    "PublicStore",
+    "StoreProduct",
+    "StoreOrder",
+    "StoreOrderItem",
 ]

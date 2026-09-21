@@ -37,6 +37,9 @@ PERMISSIONS: dict[str, str] = {
     "billing.read": "View subscription and usage",
     "billing.manage": "Manage the business subscription",
     "notifications.manage": "Manage business notifications",
+    "storefront.read": "View public store settings and customer orders",
+    "storefront.manage": "Manage the public store and published products",
+    "storefront.orders": "Confirm and fulfill public store orders",
 }
 
 OPERATIONAL_PERMISSIONS = {
@@ -59,6 +62,8 @@ SYSTEM_ROLE_PERMISSIONS: dict[str, set[str]] = {
         "sales.read",
         "sales.create",
         "sales.return",
+        "storefront.read",
+        "storefront.orders",
     },
     "stock clerk": {
         "products.read",
@@ -70,6 +75,7 @@ SYSTEM_ROLE_PERMISSIONS: dict[str, set[str]] = {
         "purchases.read",
         "purchases.receive",
         "suppliers.read",
+        "storefront.read",
     },
 }
 

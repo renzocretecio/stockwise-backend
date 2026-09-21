@@ -48,10 +48,10 @@ class StockService:
             stock_value = stock_balance.quantity * stock_balance.average_cost
             total_stock_value += stock_value
 
-            if stock_balance.quantity <= 0:
+            if available <= 0:
                 item_status = "out_of_stock"
                 out_of_stock_count += 1
-            elif stock_balance.quantity <= product.reorder_point:
+            elif available <= product.reorder_point:
                 item_status = "low_stock"
                 low_stock_count += 1
             else:
@@ -186,10 +186,12 @@ class StockService:
                 )
 
             stock_balance = db.execute(
-                select(StockBalance).where(
+                select(StockBalance)
+                .where(
                     StockBalance.business_id == business_id,
                     StockBalance.product_id == payload.product_id,
                 )
+                .with_for_update()
             ).scalar_one_or_none()
 
             if not stock_balance:
@@ -205,6 +207,15 @@ class StockService:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Adjustment would result in negative stock ({quantity_after})",
+                )
+
+            if quantity_after < stock_balance.reserved_quantity:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "Adjustment would reduce stock below the quantity "
+                        "reserved for confirmed online orders"
+                    ),
                 )
 
             stock_balance.quantity = quantity_after

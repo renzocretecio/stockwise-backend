@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session
 
 from app.config.database import get_db
@@ -11,10 +13,12 @@ from app.schemas.notification import (
     WeeklyOwnerSummarySettingsResponse,
 )
 from app.services.weekly_owner_summary import WeeklyOwnerSummaryService
+from app.services.email import EmailDeliveryError, EmailService
 from app.services.entitlements import EntitlementService
 
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
+logger = logging.getLogger(__name__)
 
 
 def _require_weekly_summary(context: RequestContext, db: Session) -> None:
@@ -86,5 +90,26 @@ async def send_weekly_owner_summary(
     row = WeeklyOwnerSummaryService.get_or_create_settings(
         business, context.user.email, db
     )
-    data = await WeeklyOwnerSummaryService.send_now(business, row, db)
+    try:
+        data = await WeeklyOwnerSummaryService.send_now(business, row, db)
+    except EmailDeliveryError as error:
+        logger.warning(
+            "Weekly owner summary email failed for business %s: %s",
+            business.id,
+            error,
+        )
+        if not EmailService.is_configured():
+            detail = (
+                "Email delivery is not configured. Add BREVO_API_KEY and "
+                "BREVO_SENDER_EMAIL to the API environment."
+            )
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        else:
+            detail = (
+                "The email provider rejected delivery. Verify the Brevo API "
+                "key and sender email."
+            )
+            status_code = status.HTTP_502_BAD_GATEWAY
+        raise HTTPException(status_code=status_code, detail=detail) from error
+
     return {**data, "open_stockwise_url": settings.APP_URL}

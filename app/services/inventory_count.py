@@ -295,14 +295,26 @@ class InventoryCountService:
                     continue
 
                 stock_balance = db.execute(
-                    select(StockBalance).where(
+                    select(StockBalance)
+                    .where(
                         StockBalance.business_id == business_id,
                         StockBalance.product_id == item.product_id,
                     )
+                    .with_for_update()
                 ).scalar_one_or_none()
 
                 if not stock_balance:
                     continue
+
+                if item.counted_quantity < stock_balance.reserved_quantity:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            "Physical count for a product is below stock "
+                            "reserved for confirmed online orders. Cancel or "
+                            "fulfill those orders before finalizing the count."
+                        ),
+                    )
 
                 stock_balance.quantity = item.counted_quantity
                 db.add(stock_balance)

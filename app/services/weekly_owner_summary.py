@@ -727,19 +727,31 @@ class WeeklyOwnerSummaryService:
         data = await WeeklyOwnerSummaryService.preview(
             business, settings_row, db
         )
-        text, html = WeeklyOwnerSummaryService.render_email(
-            business, data, settings_row
-        )
-        WeeklyOwnerSummaryService.send_email(
-            settings_row.recipients,
-            f"Weekly Owner Summary | {business.name}",
-            text,
-            html,
-        )
+        now = datetime.now(timezone.utc)
+        try:
+            text, html = WeeklyOwnerSummaryService.render_email(
+                business, data, settings_row
+            )
+            WeeklyOwnerSummaryService.send_email(
+                settings_row.recipients,
+                f"Weekly Owner Summary | {business.name}",
+                text,
+                html,
+            )
+        except Exception as error:
+            WeeklyOwnerSummaryService._record_failure(
+                settings_row,
+                data["period_end"],
+                now,
+                error,
+                db,
+            )
+            raise
+
         WeeklyOwnerSummaryService._record_success(
             settings_row,
             data["period_end"],
-            datetime.now(timezone.utc),
+            now,
             db,
         )
         return data

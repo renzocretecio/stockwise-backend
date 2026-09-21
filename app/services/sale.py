@@ -276,16 +276,24 @@ class SaleService:
                 )
 
             # Validate stock availability BEFORE making any changes
-            stock_balances = {}
+            stock_balances = {
+                str(balance.product_id): balance
+                for balance in db.execute(
+                    select(StockBalance)
+                    .where(
+                        StockBalance.business_id == business_id,
+                        StockBalance.product_id.in_(
+                            sorted(product_ids)
+                        ),
+                    )
+                    .order_by(StockBalance.product_id)
+                    .with_for_update()
+                ).scalars().all()
+            }
             insufficient_stock = []
 
             for item in payload.items:
-                stock_balance = db.execute(
-                    select(StockBalance).where(
-                        StockBalance.business_id == business_id,
-                        StockBalance.product_id == item.product_id,
-                    )
-                ).scalar_one_or_none()
+                stock_balance = stock_balances.get(item.product_id)
 
                 if not stock_balance:
                     insufficient_stock.append(
@@ -301,8 +309,6 @@ class SaleService:
                         f"requested {item.quantity}, available {available}"
                     )
                     continue
-
-                stock_balances[item.product_id] = stock_balance
 
             if insufficient_stock:
                 raise HTTPException(

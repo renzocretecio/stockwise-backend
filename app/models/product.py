@@ -170,3 +170,9 @@ class Product(Base):
     purchase_items = relationship("PurchaseItem", back_populates="product")
     sale_items = relationship("SaleItem", back_populates="product")
     inventory_count_items = relationship("InventoryCountItem", back_populates="product")
+    store_listing = relationship(
+        "StoreProduct",
+        back_populates="product",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )

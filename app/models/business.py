@@ -42,6 +42,12 @@ class Business(Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
+    public_store = relationship(
+        "PublicStore",
+        back_populates="business",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
 
 class Role(Base):
     __tablename__ = "roles"

@@ -24,6 +24,7 @@ from app.routes import (
     sync,
     billing,
     members,
+    storefront,
 )
 
 app = FastAPI(title=settings.PROJECT_NAME, version="0.1.0")
@@ -97,6 +98,8 @@ app.include_router(internal.router, prefix=settings.API_V1_STR)
 app.include_router(sync.router, prefix=settings.API_V1_STR, tags=["sync"])
 app.include_router(billing.router, prefix=settings.API_V1_STR, tags=["billing"])
 app.include_router(members.router, prefix=settings.API_V1_STR)
+app.include_router(storefront.router, prefix=settings.API_V1_STR)
+app.include_router(storefront.public_router, prefix=settings.API_V1_STR)
 
 
 @app.get("/health")
