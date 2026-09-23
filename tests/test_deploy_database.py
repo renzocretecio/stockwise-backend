@@ -22,16 +22,19 @@ def test_versioned_database_uses_normal_alembic_upgrade(monkeypatch):
     inspector.has_table.return_value = True
     bootstrap = Mock()
     upgrade = Mock()
+    seed = Mock()
 
     monkeypatch.setattr(deployment, "get_alembic_config", lambda: config)
     monkeypatch.setattr(deployment, "inspect", lambda _engine: inspector)
     monkeypatch.setattr(deployment, "bootstrap_database", bootstrap)
     monkeypatch.setattr(deployment.command, "upgrade", upgrade)
+    monkeypatch.setattr(deployment, "seed_rbac_data", seed)
 
     deployment.deploy_database()
 
     bootstrap.assert_not_called()
     upgrade.assert_called_once_with(config, "head")
+    seed.assert_called_once_with()
 
 
 def test_baseline_creates_current_schema_and_stamps_head(monkeypatch):

@@ -35,6 +35,10 @@ from app.services.document_number import DocumentNumberService
 
 
 class StorefrontService:
+    _PAYMENT_METHODS_REQUIRING_INSTRUCTIONS = {
+        "gcash",
+        "bank_transfer",
+    }
     _TRANSITIONS = {
         "new": {"confirmed", "cancelled"},
         "confirmed": {
@@ -74,6 +78,17 @@ class StorefrontService:
                 detail="Business not found",
             )
 
+        payment_methods = [item.value for item in payload.payment_methods]
+        cls._validate_payment_configuration(
+            payment_methods,
+            payload.payment_instructions,
+        )
+        if payload.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Publish at least one product before opening the store",
+            )
+
         slug = payload.slug or cls._slugify(payload.name or business.name)
         slug = cls._unique_slug(slug, db)
         store = PublicStore(
@@ -87,7 +102,7 @@ class StorefrontService:
             out_of_stock_behavior=payload.out_of_stock_behavior.value,
             pickup_enabled=payload.pickup_enabled,
             delivery_enabled=payload.delivery_enabled,
-            payment_methods=[item.value for item in payload.payment_methods],
+            payment_methods=payment_methods,
             payment_instructions=payload.payment_instructions,
         )
         db.add(store)
@@ -148,6 +163,34 @@ class StorefrontService:
                 detail="Enable pickup, delivery, or both",
             )
 
+        payment_methods = changes.get(
+            "payment_methods",
+            store.payment_methods,
+        )
+        payment_instructions = changes.get(
+            "payment_instructions",
+            store.payment_instructions,
+        )
+        cls._validate_payment_configuration(
+            payment_methods,
+            payment_instructions,
+        )
+
+        if changes.get("is_active", store.is_active):
+            published_count = db.execute(
+                select(func.count(StoreProduct.id)).where(
+                    StoreProduct.store_id == store.id,
+                    StoreProduct.is_public.is_(True),
+                )
+            ).scalar_one()
+            if published_count == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        "Publish at least one product before opening the store"
+                    ),
+                )
+
         for field, value in changes.items():
             setattr(store, field, value)
         db.add(store)
@@ -157,6 +200,30 @@ class StorefrontService:
             select(Business).where(Business.id == business_id)
         ).scalar_one()
         return cls._format_store(store, business.currency_code)
+
+    @classmethod
+    def _validate_payment_configuration(
+        cls,
+        payment_methods: list[str],
+        payment_instructions: dict[str, str] | None,
+    ) -> None:
+        instructions = payment_instructions or {}
+        missing = [
+            method
+            for method in payment_methods
+            if method in cls._PAYMENT_METHODS_REQUIRING_INSTRUCTIONS
+            and not instructions.get(method, "").strip()
+        ]
+        if missing:
+            labels = {
+                "gcash": "GCash",
+                "bank_transfer": "bank transfer",
+            }
+            names = ", ".join(labels[method] for method in missing)
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Add payment instructions for {names}",
+            )
 
     @classmethod
     def list_catalog_products(
@@ -201,7 +268,19 @@ class StorefrontService:
             query.order_by(Product.name).offset((page - 1) * page_size).limit(page_size)
         ).all()
         products = [cls._format_catalog_product(*row, public=False) for row in rows]
-        return cls._paginated("products", products, total, page, page_size)
+        published_count = db.execute(
+            select(func.count(StoreProduct.id))
+            .join(Product, Product.id == StoreProduct.product_id)
+            .where(
+                StoreProduct.store_id == store.id,
+                StoreProduct.is_public.is_(True),
+                Product.business_id == business_id,
+                Product.is_active.is_(True),
+            )
+        ).scalar_one()
+        result = cls._paginated("products", products, total, page, page_size)
+        result["published_count"] = published_count
+        return result
 
     @classmethod
     def update_catalog_product(

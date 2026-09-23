@@ -87,6 +87,7 @@ def deploy_database() -> None:
 
     if inspect(engine).has_table("alembic_version"):
         command.upgrade(config, "head")
+        seed_rbac_data()
         return
 
     baseline_database()

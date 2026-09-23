@@ -1,5 +1,7 @@
 from decimal import Decimal
 
+import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine, select
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
@@ -9,6 +11,7 @@ from sqlalchemy.types import UUID as UUIDType
 from app.models import Base
 from app.models.auth import User
 from app.models.business import Business
+from app.models.category import Category
 from app.models.document_sequence import BusinessDocumentSequence
 from app.models.inventory import StockBalance, StockMovement
 from app.models.product import Product
@@ -23,6 +26,8 @@ from app.schemas.storefront import (
     PublicOrderCreate,
     StoreOrderStatusUpdate,
     StoreProductBulkPublish,
+    StorefrontCreate,
+    StorefrontUpdate,
 )
 from app.services.storefront import StorefrontService
 
@@ -42,6 +47,7 @@ def _database():
         engine,
         tables=[
             Business.__table__,
+            Category.__table__,
             User.__table__,
             Product.__table__,
             StockBalance.__table__,
@@ -193,7 +199,6 @@ def test_cancelling_confirmed_order_releases_stock():
 
 def test_public_order_schema_requires_delivery_address():
     from pydantic import ValidationError
-    import pytest
 
     with pytest.raises(ValidationError):
         PublicOrderCreate(
@@ -257,5 +262,72 @@ def test_bulk_publish_creates_and_updates_store_listings():
     assert listing.is_public is True
 
 
+def test_store_cannot_open_before_a_product_is_published():
+    db = _database()
+    business = Business(name="Empty Store", slug="empty-store")
+    db.add(business)
+    db.commit()
+
+    StorefrontService.create_store(
+        business.id,
+        StorefrontCreate(name="Empty Store"),
+        db,
+    )
+
+    with pytest.raises(HTTPException) as error:
+        StorefrontService.update_store(
+            business.id,
+            StorefrontUpdate(is_active=True),
+            db,
+        )
+
+    assert error.value.status_code == 422
+    assert error.value.detail == (
+        "Publish at least one product before opening the store"
+    )
+
+
+def test_digital_payment_method_requires_instructions():
+    db = _database()
+    business = Business(name="Digital Store", slug="digital-store")
+    db.add(business)
+    db.commit()
+
+    with pytest.raises(HTTPException) as error:
+        StorefrontService.create_store(
+            business.id,
+            StorefrontCreate(
+                name="Digital Store",
+                payment_methods=["gcash"],
+            ),
+            db,
+        )
+
+    assert error.value.status_code == 422
+    assert error.value.detail == "Add payment instructions for GCash"
+
+
 def test_gcash_maps_to_supported_sale_payment_method():
     assert StorefrontService._sale_payment_method("gcash") == "e_wallet"
+
+
+def test_catalog_published_count_is_not_limited_to_current_page():
+    db = _database()
+    business, _user, _product, _balance, _order = _order_fixture(db)
+    other = Product(
+        business_id=business.id,
+        name="Tea",
+        normalized_name="tea",
+        unit="bag",
+        cost_price=Decimal("50"),
+        selling_price=Decimal("80"),
+    )
+    db.add(other)
+    db.commit()
+
+    result = StorefrontService.list_catalog_products(
+        business.id, db, page=1, page_size=1, search="Tea"
+    )
+
+    assert result["pagination"]["total"] == 1
+    assert result["published_count"] == 1
