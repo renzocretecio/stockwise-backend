@@ -806,17 +806,18 @@ class WeeklyOwnerSummaryService:
     ) -> date | None:
         utc_now = WeeklyOwnerSummaryService._as_utc(now)
         local_now = utc_now.astimezone(ZoneInfo(business.timezone))
-        if local_now.weekday() != row.send_weekday:
-            return None
+        days_since_scheduled_weekday = (
+            local_now.weekday() - row.send_weekday
+        ) % 7
         scheduled = local_now.replace(
             hour=row.send_hour,
             minute=row.send_minute,
             second=0,
             microsecond=0,
-        )
+        ) - timedelta(days=days_since_scheduled_weekday)
         if local_now < scheduled:
             return None
-        period_end = local_now.date() - timedelta(days=1)
+        period_end = scheduled.date() - timedelta(days=1)
         if row.last_sent_period_end == period_end.isoformat():
             return None
         next_attempt = row.next_attempt_at

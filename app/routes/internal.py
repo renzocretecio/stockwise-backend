@@ -39,12 +39,14 @@ def require_cron_secret(
     response_model=WeeklySummaryJobResponse,
 )
 async def run_weekly_owner_summaries(
+    dry_run: bool = False,
     _: None = Depends(require_cron_secret),
     db: Session = Depends(get_db),
 ):
     result = await WeeklyOwnerSummaryService.send_due(
         datetime.now(timezone.utc),
         db,
+        dry_run=dry_run,
     )
     payload = WeeklySummaryJobResponse(
         due=result.due,

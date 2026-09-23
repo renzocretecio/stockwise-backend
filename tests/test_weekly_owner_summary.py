@@ -60,6 +60,26 @@ def test_due_period_waits_until_scheduled_local_time():
     )
 
 
+def test_due_period_catches_up_after_scheduled_weekday():
+    business = SimpleNamespace(timezone="Asia/Manila")
+    settings = SimpleNamespace(
+        send_weekday=6,
+        send_hour=12,
+        send_minute=0,
+        last_sent_period_end=None,
+        next_attempt_at=None,
+    )
+    now = datetime(2026, 9, 21, 1, 0, tzinfo=timezone.utc)
+
+    period_end = WeeklyOwnerSummaryService._due_period_end(
+        business,
+        settings,
+        now,
+    )
+
+    assert period_end == date(2026, 9, 19)
+
+
 def test_due_period_respects_retry_backoff():
     now = datetime(2026, 9, 20, 4, 4, tzinfo=timezone.utc)
     business = SimpleNamespace(timezone="Asia/Manila")
